@@ -148,7 +148,7 @@ render() { # template dst
   [ "$DRY_RUN" != "1" ] && chmod 644 "$2"
   return 0
 }
-for u in soc-dashboard soc-audit-mcp soc-tickets-mcp soc-memory-mcp soc-manager-mcp; do
+for u in soc-dashboard soc-audit-mcp soc-tickets-mcp soc-memory-mcp soc-manager-mcp soc-wazuh-mcp; do
   render "$TPL/$u.service" "/etc/systemd/system/$u.service"
 done
 render "$TPL/realtime-soc-server.service" /etc/systemd/system/realtime-soc-server.service
@@ -174,7 +174,7 @@ run chown -R "$SOC_USER:$SOC_USER" "$SOC_STATE_DIR" "$SOC_LOGS_DIR" "$SOC_AGENTS
 # ---- enable ----
 log "daemon-reload + enable --now"
 run systemctl daemon-reload
-for u in soc-dashboard soc-audit-mcp soc-tickets-mcp soc-memory-mcp soc-manager-mcp realtime-soc-server imap-watcher; do
+for u in soc-dashboard soc-audit-mcp soc-tickets-mcp soc-memory-mcp soc-wazuh-mcp soc-manager-mcp realtime-soc-server imap-watcher; do
   run systemctl enable --now "$u" || log "WARN: enable --now $u failed (continuing)"
 done
 run systemctl enable --now soc-daily-decisions.timer

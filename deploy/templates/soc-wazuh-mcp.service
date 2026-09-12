@@ -1,0 +1,31 @@
+[Unit]
+Description=SOC Wazuh indexer MCP server (read-only)
+Documentation=file:///opt/soc-openclaw/docs/soc/agentic-soc-agentic-2026-08-06.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="WAZUH_INDEXER_URL=https://127.0.0.1:9200"
+Environment="WAZUH_INDEXER_USERNAME=admin"
+Environment="WAZUH_INDEXER_PASSWORD=***"
+ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-wazuh-mcp/server.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-wazuh-mcp
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/soc-openclaw
+
+Environment="SOC_WAZUH_MCP_BIND=0.0.0.0"
+[Install]
+WantedBy=multi-user.target
