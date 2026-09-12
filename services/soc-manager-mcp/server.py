@@ -85,6 +85,7 @@ TOOLS = (
     "get_manager_info",
     "get_rule_info",
     "restart_agent",
+    "run_scan",
 )
 
 _AGENT_ID_RE = re.compile(r"^\d{1,4}$")
@@ -391,8 +392,8 @@ def tool_restart_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"bad agent_id: {aid_s!r}")
     aid_norm = aid_s.zfill(3)
     res_status, body = _CLIENT.request(
-        "PUT", "/agents",
-        body={"agents_list": [aid_norm], "action": "restart"},
+        "PUT", "/agents/restart",
+        query={"agents_list": aid_norm},
         mutate=True,
     )
     if res_status != 200:
@@ -401,6 +402,43 @@ def tool_restart_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         "ok": True,
         "tool": "restart_agent",
         "agent_id": aid_norm,
+        "manager_response": body if isinstance(body, dict) else {"raw": body},
+    }
+
+
+def tool_run_scan(args: Dict[str, Any]) -> Dict[str, Any]:
+    """run_scan(agent_id) -> MUTATING. Triggers an on-demand scan.
+
+    Mechanism: restarts the Wazuh agent via the manager API
+    (PUT /agents action=restart). On reconnect the agent starts a fresh
+    syscheck/FIM integrity scan and the vulnerability detector re-runs —
+    i.e. the practical "scan now" control for a managed host.
+
+    Disabled unless SOC_MANAGER_MCP_ALLOW_MUTATIONS=1.
+    """
+    aid = args.get("agent_id")
+    if aid is None:
+        raise ValueError("agent_id is required")
+    aid_s = str(aid).strip()
+    if not _AGENT_ID_RE.match(aid_s):
+        raise ValueError(f"bad agent_id: {aid_s!r}")
+    aid_norm = aid_s.zfill(3)
+    res_status, body = _CLIENT.request(
+        "PUT", "/agents/restart",
+        query={"agents_list": aid_norm},
+        mutate=True,
+    )
+    if res_status != 200:
+        raise RuntimeError(f"scan trigger HTTP {res_status}: {body!r}")
+    return {
+        "ok": True,
+        "tool": "run_scan",
+        "agent_id": aid_norm,
+        "scan": {
+            "trigger": "agent-restart",
+            "effect": "agent reconnects in 5-30s, then runs a fresh "
+                      "syscheck/FIM scan; vulnerability detector re-runs",
+        },
         "manager_response": body if isinstance(body, dict) else {"raw": body},
     }
 
@@ -481,6 +519,7 @@ class _Handler(BaseHTTPRequestHandler):
             "get_manager_info": tool_get_manager_info,
             "get_rule_info": tool_get_rule_info,
             "restart_agent": tool_restart_agent,
+            "run_scan": tool_run_scan,
         }[tool]
         try:
             result = impl(args)
