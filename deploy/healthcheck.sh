@@ -15,7 +15,7 @@ systemctl is-enabled soc-daily-decisions.timer >/dev/null 2>&1 \
   && ok "timer soc-daily-decisions.timer" || bad "timer soc-daily-decisions.timer"
 
 echo "--- HTTP backends ---"
-for p in 8765 8767 8768 8769; do
+for p in 8765 8766 8767 8768 8769; do
   curl -sf -m 5 "http://127.0.0.1:$p/healthz" >/dev/null 2>&1 && ok "port $p healthz" || bad "port $p healthz"
 done
 curl -sf -m 5 "$DASH/healthz" >/dev/null 2>&1 && ok "dashboard $DASH/healthz" || bad "dashboard $DASH/healthz"
