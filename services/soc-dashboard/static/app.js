@@ -156,7 +156,11 @@
         return el("tr", isMgr ? { class: "muted" } : null,
           el("td", null, badge(icon + " " + iconCls)),
           el("td", null, el("code", null, r.id || "-")),
-          el("td", null, r.name || "-"),
+          el("td", null, el("a", {
+            href: "/fleet/" + encodeURIComponent(r.id || r.name),
+            "data-link": "",
+            style: "font-weight:600;text-decoration:underline;cursor:pointer",
+          }, r.name || "-")),
           el("td", null, badge(r.status || "?" + " " + statusKind)),
           el("td", null, el("code", null, r.ip || "-")),
           el("td", null, el("code", null, r.version || "-")),
@@ -166,6 +170,79 @@
         );
       })),
     );
+  }
+
+  async function pageFleetHost(agentId) {
+    let data;
+    try { data = await api("/tools/fleet_host_view", "POST", { agent_id: agentId }); }
+    catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "fleet_host_view failed"));
+    const a = data.agent || {};
+    const alerts = data.alerts || [];
+    const stig = data.stig || {};
+    const nodes = [
+      el("h1", null, "Host: " + (a.name || agentId)),
+      el("div", { class: "cards" },
+        card("Status", a.status || "?", a.status === "active" ? "good" : "bad"),
+        card("IP", a.ip || "-", ""),
+        card("Version", a.version || "-", ""),
+        card("Group", (a.group || []).join(", ") || "-", ""),
+        card("Last keepalive", fmtTime(a.last_keepalive) || "-", ""),
+      ),
+      el("div", { class: "section" },
+        el("h2", null, "Scan control"),
+        el("p", { class: "muted" },
+          "Runs the Wazuh agent-restart active response on this host: the agent reconnects within ~30 s and immediately starts a fresh syscheck/FIM integrity scan; the vulnerability detector re-runs."),
+        el("button", {
+          class: "btn",
+          onclick: async (ev) => {
+            ev.preventDefault();
+            if (!confirm("Trigger scan on " + (a.name || agentId) + "? (agent restart)")) return;
+            ev.target.disabled = true;
+            ev.target.textContent = "triggering…";
+            try {
+              const r = await api("/tools/run_scan", "POST", { agent_id: agentId });
+              ev.target.textContent = r.ok ? "scan triggered ✓" : "failed: " + (r.error || "?");
+            } catch (e) {
+              ev.target.textContent = "failed: " + (e.message || e);
+            }
+            setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Run scan now"; }, 8000);
+          },
+        }, "Run scan now"),
+        data.mutations_enabled
+          ? null
+          : el("p", { class: "muted" }, "Note: manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 not set) — the button will fail until enabled."),
+      ),
+      el("div", { class: "section" },
+        el("h2", null, "Recent alerts" + (alerts.length ? " (" + alerts.length + ")" : " (none)")),
+        alerts.length
+          ? el("table", null,
+              el("thead", null, el("tr", null,
+                el("th", null, "ts"), el("th", null, "level"), el("th", null, "rule"),
+                el("th", null, "severity"), el("th", null, "triage"))),
+              el("tbody", null, ...alerts.slice(0, 15).map(al =>
+                el("tr", null,
+                  el("td", null, el("code", null, (al.ts || "").substring(0, 19).replace("T", " "))),
+                  el("td", null, badge(String(al.level ?? "?"))),
+                  el("td", null, el("code", null, String(al.rule_id || "-"))),
+                  el("td", null, al.severity ? badge(al.severity) : "-"),
+                  el("td", null, String(al.triage || "").substring(0, 120))))),
+            )
+          : el("p", { class: "empty" }, "No alerts recorded for this host yet."),
+      ),
+      el("div", { class: "section" },
+        el("h2", null, "STIG findings"),
+        stig.ok
+          ? el("p", { class: "muted" },
+              (stig.total ?? 0) + " findings · " +
+              (stig.unique_controls ?? 0) + " controls · " +
+              "see " + el("a", { href: "/stig/host/" + encodeURIComponent(a.name || agentId), "data-link": "" }, "STIG host view"))
+          : el("p", { class: "empty" }, "No STIG data for this host."),
+      ),
+      el("p", { class: "muted" },
+        el("a", { href: "/fleet", "data-link": "" }, "← back to fleet")),
+    ];
+    return nodes;
   }
 
   async function pageOverview() {
@@ -994,6 +1071,9 @@
     } else if (path === "/fleet") {
       nodes = await pageFleet();
       scheduleFleetRefresh();
+    } else if (path.startsWith("/fleet/")) {
+      const fid = decodeURIComponent(path.replace(/^\/fleet\//, "").replace(/\/+$/, ""));
+      if (fid) nodes = await pageFleetHost(fid);
     } else if (path === "/scores") {
       nodes = await pageScores();
     } else if (path === "/stig") {

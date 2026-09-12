@@ -90,6 +90,7 @@ DASHBOARD_TOOLS = (
     "fleet_status", "fleet_summary",
     "stig_overview", "stig_findings",
     "stig_host_view",
+    "fleet_host_view", "run_scan",
 )
 
 
@@ -445,6 +446,72 @@ def tool_tickets_list_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
         "ok": False, "error": f"unexpected C3 response: {body!r}"}
 
 
+def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
+    """fleet_host_view(agent_id) -> drill-down for one managed host.
+
+    Combines: current Wazuh state (C2 get_agent), recent alerts for the
+    host (realtime ingest /alerts filtered by agent name), STIG findings
+    (stig_host_view), and whether the C2 manager allows mutations (which
+    gates the Run Scan button).
+    """
+    aid = str(args.get("agent_id") or "").strip()
+    if not aid:
+        raise ValueError("agent_id is required")
+    c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
+    code, agent = _http_post(f"{c2}/tools/get_agent",
+                             {"agent_id": aid}, timeout=8.0)
+    if code != 200 or not isinstance(agent, dict) or not agent.get("ok"):
+        return {"ok": False, "tool": "fleet_host_view",
+                "error": f"C2 get_agent failed ({code})", "agent_id": aid}
+    row = agent.get("agent", {})
+    name = str(row.get("name") or aid)
+
+    rt = os.environ.get("SOC_REALTIME_URL", "http://127.0.0.1:8765")
+    alerts: List[Dict[str, Any]] = []
+    rc, rb = _http_get(f"{rt}/alerts", timeout=3.0)
+    if rc == 200 and isinstance(rb, dict):
+        want = name.lower()
+        for a in rb.get("alerts", []):
+            an = str(a.get("agent_name") or
+                     (a.get("full_alert") or {}).get("agent_name", "")).lower()
+            if an and an == want:
+                alerts.append(a)
+    alerts.sort(key=lambda a: str(a.get("ts", "")), reverse=True)
+    alerts = alerts[:50]
+
+    stig = tool_stig_host_view({"host": name})
+
+    _, minfo = _http_post(f"{c2}/tools/get_manager_info", {})
+    mutations = bool((minfo or {}).get("mutations_enabled")) \
+        if isinstance(minfo, dict) else False
+
+    return {
+        "ok": True,
+        "tool": "fleet_host_view",
+        "agent": row,
+        "alerts": alerts,
+        "alerts_total": len(alerts),
+        "stig": stig,
+        "mutations_enabled": mutations,
+    }
+
+
+def tool_run_scan_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
+    """run_scan(agent_id) -> proxy to the C2 manager-mcp run_scan tool
+    (mutating: restarts the agent to trigger a fresh scan)."""
+    aid = str(args.get("agent_id") or "").strip()
+    if not aid:
+        raise ValueError("agent_id is required")
+    c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
+    code, body = _http_post(f"{c2}/tools/run_scan", {"agent_id": aid},
+                            timeout=15.0)
+    if code != 200:
+        err = body.get("error") if isinstance(body, dict) else repr(body)
+        return {"ok": False, "tool": "run_scan",
+                "error": f"C2 manager returned {code}: {err}"}
+    return body
+
+
 def tool_fleet_status(args: Dict[str, Any]) -> Dict[str, Any]:
     """fleet_status() -> one row per Wazuh agent, plus summary counts.
 
@@ -694,6 +761,8 @@ class _Handler(BaseHTTPRequestHandler):
             "stig_overview": tool_stig_overview,
             "stig_findings": tool_stig_findings,
             "stig_host_view": tool_stig_host_view,
+            "fleet_host_view": tool_fleet_host_view,
+            "run_scan": tool_run_scan_proxy,
         }[tool]
         try:
             result = impl(args)
