@@ -1,0 +1,40 @@
+[Unit]
+Description=Agentic SOC IMAP reply watcher (SOC 1.2)
+Documentation=https://github.com/dmrobbi/soc-openclaw
+After=network-online.target realtime-soc-server.service
+Wants=network-online.target
+# Soft-dependency: realtime-soc-server is preferred but not required.
+# If it comes up later, this watcher continues to use the JSONL log directly.
+
+[Service]
+Type=simple
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw/services
+ExecStart=/bin/bash -c 'exec /usr/bin/python3 /opt/soc-openclaw/services/imap-watcher/imap_idle_watcher.py >> /home/__SOC_USER__/logs/imap-watcher.log 2>&1'
+Restart=on-failure
+RestartSec=5
+
+# Configurable via /etc/default/imap-watcher
+EnvironmentFile=-/etc/default/imap-watcher
+Environment="WAZUH_REPORTS_ENV=/home/__SOC_USER__/.openclaw/soc/secrets/reports-mailbox.env"
+Environment="IMAP_WATCHER_LOG=/home/__SOC_USER__/logs/imap-watcher.log"
+Environment="IMAP_WATCHER_DB=/home/__SOC_USER__/.openclaw/soc/data/imap_watcher.sqlite"
+Environment="IMAP_WATCHER_POLL_SEC=30"
+# Explicit PATH so the watcher can invoke `openclaw ask` for Ollama.
+# nodejs-installed binaries live in /home/__SOC_USER__/.npm-global/bin which is
+# outside the default systemd PATH.
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin:/home/__SOC_USER__/.npm-global/bin"
+
+# Hardening — minimal, since the watcher reads secret mailbox creds.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/__SOC_USER__/.openclaw/soc/data /home/__SOC_USER__/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

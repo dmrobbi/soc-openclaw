@@ -1,0 +1,19 @@
+# systemd timer for the SOC daily decisions report (Track D, D1).
+#
+# Fires daily at 06:00 UTC — two hours after the curator runs
+# (soc-curator.cron, 04:00 UTC daily) so the audit + realtime
+# JSONLs are populated before the report is generated.
+#
+# Install: see soc-daily-decisions.service.
+
+[Unit]
+Description=SOC daily decisions report timer (06:00 UTC daily)
+Documentation=file:///opt/soc-openclaw/scripts/soc/soc_daily_decisions.py
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+Unit=soc-daily-decisions.service
+
+[Install]
+WantedBy=timers.target

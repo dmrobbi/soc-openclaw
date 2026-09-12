@@ -1,0 +1,56 @@
+# systemd unit for the SOC cross-incident memory MCP server
+# (Track A, task A3 — 2026-08-08).
+#
+# Run on the SOC host (the one running the realtime SOC server
+# and the openclaw agent harness — currently thing1, with
+# trooper2 as the future SOC-gateway host per A2 follow-up).
+#
+# Install:
+#   sudo cp scripts/soc/soc-memory-mcp/soc-memory-mcp.service \
+#           /etc/systemd/system/soc-memory-mcp.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-memory-mcp
+#
+# Verifies:
+#   curl -sS http://127.0.0.1:8770/healthz
+#   curl -sS http://127.0.0.1:8770/tools
+#
+# Note: this unit binds 127.0.0.1:8770 (loopback). The agent
+# harness on the same host connects directly. Do NOT expose this
+# MCP server beyond the SOC host — memory_add is read-write and
+# the backing JSONL has no auth beyond what's at the network
+# layer (which on loopback is none).
+
+[Unit]
+Description=SOC cross-incident memory MCP server (read/write, tenant-scoped)
+Documentation=file:///opt/soc-openclaw/docs/soc/agentic-soc-agentic-2026-08-06.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SOC_USER__
+Group=__SOC_USER__
+ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-memory-mcp/server.py
+WorkingDirectory=/opt/soc-openclaw/services/soc-memory-mcp
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-memory-mcp
+
+# Backing file lives under the agent workspace. Created on first write.
+# Override with SOC_MEMORY_FILE if you need a different location.
+Environment=SOC_MEMORY_FILE=/home/__SOC_USER__/.openclaw/agents/soc-triage/memory/memory.jsonl
+Environment=PYTHONUNBUFFERED=1
+
+# Hardening: read-only filesystem except for the state path. Memory
+# writes only go to the backing JSONL; nothing else on disk is
+# touched at runtime.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/__SOC_USER__/.openclaw/agents
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.log
+*.log.*
+secrets/
+deploy/soc-stack.env
+*.db
+*.sqlite
+.DS_Store

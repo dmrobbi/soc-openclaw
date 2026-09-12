@@ -1,0 +1,76 @@
+# systemd unit for the SOC web dashboard (Track D, D2 — 2026-08-08).
+#
+# Run on the SOC host (the one running the C4 / C3 MCPs —
+# typically thing1 for the SIEM fleet).
+#
+# Install:
+#   sudo cp scripts/soc/soc-dashboard/soc-dashboard.service \
+#           /etc/systemd/system/soc-dashboard.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-dashboard
+#
+# Verifies:
+#   curl -sS http://127.0.0.1:8771/healthz
+#   open http://127.0.0.1:8771/soc/ in a browser
+#
+# Notes:
+#   - The unit binds 0.0.0.0:8771 (all interfaces) so the dashboard is
+#     reachable via Tailscale (<lan-ip>), LAN (e.g. <lan-ip>),
+#     or loopback (127.0.0.1). Set SOC_DASHBOARD_BIND=127.0.0.1 for
+#     loopback-only. Routes: /, /scores, /tenants/<id>, /agents/<id>,
+#     /runs/<id>, /healthz, /fleet.
+#     Set to the LAN IP + add a firewall rule to expose on LAN.
+#   - This dashboard is read-only. PUT and DELETE on any path
+#     return 405.
+#   - The dashboard has no data store of its own; it proxies
+#     to the C4 (audit-log) and C3 (tickets) MCPs. If those
+#     are down, the dashboard still serves pages but shows
+#     "backend offline" in the data sections.
+#   - Requires PyYAML on the host for the tenant list (loaded
+#     from config/soc-routing.yaml).
+
+[Unit]
+Description=SOC web dashboard (read-only, proxies to C4 + C3 MCPs)
+Documentation=file:///opt/soc-openclaw/services/soc-dashboard/README.md
+After=network-online.target soc-audit-mcp.service soc-tickets-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Bind to the Tailscale IP (default <lan-ip> for thing1) instead of
+# 127.0.0.1 so the dashboard is reachable from any tailnet device.
+# Set to 127.0.0.1 for loopback-only on the SOC host itself.
+# To bind to LAN instead, use the LAN IP + a firewall rule.
+# Bind to 0.0.0.0 (all interfaces) so the dashboard is reachable on
+# every IP the host has: Tailscale (e.g. <lan-ip> for thing1), LAN
+# (e.g. <lan-ip>), and loopback (127.0.0.1). Set to 127.0.0.1 for
+# loopback-only, or to a specific IP for tighter scoping.
+# Changed 2026-08-10 23:33 UTC from <lan-ip> (Tailscale-only) to
+# 0.0.0.0 (all interfaces) per user request to access via LAN.
+Environment="SOC_DASHBOARD_BIND=0.0.0.0"
+Environment="SOC_DASHBOARD_PORT=8771"
+Environment="SOC_DASHBOARD_C4_URL=http://127.0.0.1:8769"
+Environment="SOC_DASHBOARD_C3_URL=http://127.0.0.1:8768"
+# Port 8771 (not 8770) — 8770 is owned by soc-memory-mcp (Track A3).
+# Verified 2026-08-08 20:58 UTC during C2/C3/C4/D2 wire-up; see carry-forward.
+ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-dashboard/server.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-dashboard
+
+# Hardening (the dashboard reads config + proxies HTTP; no
+# filesystem writes outside the cwd)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/soc-openclaw
+
+[Install]
+WantedBy=multi-user.target

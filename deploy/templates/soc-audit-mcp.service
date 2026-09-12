@@ -1,0 +1,54 @@
+# systemd unit for the SOC audit-log MCP server (Track C, C4 — 2026-08-08).
+#
+# Run on the SOC host (the one with the canonical
+# ~/.openclaw/audit_log.jsonl — typically thing1 for the
+# SIEM fleet).
+#
+# Install:
+#   sudo cp scripts/soc/soc-audit-mcp/soc-audit-mcp.service \
+#           /etc/systemd/system/soc-audit-mcp.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-audit-mcp
+#
+# Verifies:
+#   curl -sS http://127.0.0.1:8769/healthz
+#   curl -sS http://127.0.0.1:8769/tools
+#
+# Notes:
+#   - The unit binds 127.0.0.1:8769 (loopback). If you need a
+#     remote agent, set SOC_AUDIT_MCP_BIND=lan in the
+#     Environment= block AND add a firewall rule.
+#   - Reads + the optional annotate_run append are both fine
+#     for the default ~/.openclaw/audit_log.jsonl (writable by
+#     `wez`). If you want to pin the log so no annotations can
+#     be added, `chmod a-w` it before starting the unit;
+#     annotate_run will then return 403.
+
+[Unit]
+Description=SOC audit-log MCP server (read-mostly)
+Documentation=file:///opt/soc-openclaw/services/soc-audit-mcp/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-audit-mcp/server.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-audit-mcp
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/__SOC_USER__/.openclaw
+
+[Install]
+WantedBy=multi-user.target
