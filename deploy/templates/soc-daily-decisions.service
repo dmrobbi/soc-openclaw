@@ -1,0 +1,61 @@
+# systemd unit for the SOC daily decisions report (Track D, D1).
+#
+# Run on the SOC host (thing1 for the SOC fleet — same host
+# that owns /home/__SOC_USER__/.openclaw/audit_log.jsonl and
+# /opt/soc-openclaw/services/data/realtime_soc.jsonl).
+#
+# Install:
+#   sudo cp scripts/soc/soc-daily-decisions/soc-daily-decisions.service \
+#           /etc/systemd/system/soc-daily-decisions.service
+#   sudo cp scripts/soc/soc-daily-decisions/soc-daily-decisions.timer \
+#           /etc/systemd/system/soc-daily-decisions.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-daily-decisions.timer
+#
+# Verifies:
+#   systemctl list-timers soc-daily-decisions.timer
+#   journalctl -u soc-daily-decisions.service -n 5
+#
+# Notes:
+#   - The ExecStart is a separate script (NOT an inline `sh -c`
+#     string with $(date ...)) because systemd expands `%X`
+#     specifiers in unit-file values, and even `\%` escapes
+#     don't reliably stop the parsing — first attempt produced
+#     "$(date -u +\58a830d22c1a4afcbd1b88cbdf4c7624-\/run/..."
+#     in ExecStart and errored with "Invalid environment
+#     variable name". Verified 2026-08-09 12:15 UTC.
+#   - --day is computed by the pre-start script at trigger
+#     time so the report always covers "today UTC" — same day
+#     as the curator run at 04:00 UTC, just 2h later
+#     (06:00 UTC).
+#   - Stdout/stderr go to the journal; nothing on disk unless
+#     the report file itself is the artifact you want
+#     (memory/soc-agent-decisions-YYYY-MM-DD.md).
+#   - Persistent=true on the timer means a missed run (e.g. host
+#     was off) gets caught up at next boot, so we never lose a
+#     day's report.
+#   - Runs as user `wez` because the audit_log.jsonl is owned
+#     by wez; running as root would be a permissions downgrade.
+
+[Unit]
+Description=SOC daily decisions report (Track D, D1)
+Documentation=file:///opt/soc-openclaw/services/daily-decisions/soc_daily_decisions.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/__SOC_USER__/.openclaw/agents/soc-daily-decisions/pre-start.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-daily-decisions
+TimeoutStartSec=120
+# Allow writing the report under the workspace.
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+[Unit]
+Description=Agentic SOC real-time ingest server (SOC 1.1)
+Documentation=https://github.com/dmrobbi/soc-openclaw
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw/services
+ExecStart=/bin/bash -c 'exec /usr/bin/python3 /opt/soc-openclaw/services/realtime-ingest/realtime_ingest.py >> /home/__SOC_USER__/logs/realtime-soc-server.log 2>&1'
+Restart=on-failure
+RestartSec=5
+# Log to journald as well for `journalctl -u realtime-soc-server`
+# (the append happens via ExecStart; journald sees stdout too.)
+
+# Environment overrides can go in /etc/default/realtime-soc-server
+EnvironmentFile=-/etc/default/realtime-soc-server
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/__SOC_USER__/.openclaw/soc/data /home/__SOC_USER__/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

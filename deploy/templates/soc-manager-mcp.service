@@ -1,0 +1,64 @@
+# systemd unit for the SOC Wazuh manager API MCP server (Track C, C2 — 2026-08-08).
+#
+# Run on the SOC host (the one with network access to the Wazuh
+# manager on :55000 — typically thing1 for the SIEM fleet).
+#
+# Install:
+#   sudo cp scripts/soc/soc-manager-mcp/soc-manager-mcp.service \
+#           /etc/systemd/system/soc-manager-mcp.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-manager-mcp
+#
+# Verifies:
+#   curl -sS http://127.0.0.1:8767/healthz
+#   curl -sS http://127.0.0.1:8767/tools
+#
+# Notes:
+#   - The ExecStartPre line materialises /tmp/soc-manager-mcp.env
+#     from the canonical secret file + the reports-mailbox env, so
+#     WAZUH_API_USERNAME and WAZUH_API_PASSWORD are visible to the
+#     server process without echoing them into the journal.
+#   - The unit binds 127.0.0.1:8767 (loopback). If you need a
+#     remote agent, set SOC_MANAGER_MCP_BIND=lan in the
+#     Environment= block AND add a firewall rule.
+#   - Mutations are OFF by default. To enable restart_agent,
+#     set SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 in the Environment=
+#     block. Leave it off unless you actually have an agent
+#     ready to act on a restart.
+
+[Unit]
+Description=SOC Wazuh manager API MCP server (read-mostly)
+Documentation=file:///opt/soc-openclaw/services/soc-manager-mcp/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Manager creds (read from the canonical secret file). The
+# ExecStartPre is a separate script (NOT an inline `sh -c` string)
+# because systemd expands `%\w` specifiers in unit-file values,
+# and `%s` is the user's login shell — for user `wez` that's
+# `/usr/bin/bash`, which would silently corrupt any inline
+# `printf "...%s\n..."` format string. Verified 2026-08-08 21:04 UTC.
+ExecStartPre=/home/__SOC_USER__/.openclaw/agents/soc-manager-mcp/pre-start.sh
+ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-manager-mcp/server.py
+EnvironmentFile=/home/__SOC_USER__/.openclaw/agents/soc-manager-mcp/env
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-manager-mcp
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/soc-openclaw /home/__SOC_USER__/.openclaw/agents
+
+[Install]
+WantedBy=multi-user.target

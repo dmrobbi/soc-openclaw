@@ -1,0 +1,85 @@
+# Security notes
+
+Secrets, credentials, and the recovery paths that bite.
+
+## Ground rules
+
+1. **Secrets never live in this repo.** The installer only checks for
+   their existence and never prints values. Two files, chmod 600:
+   - `wazuh-manager-api.env` — `WAZUH_API_USERNAME`, `WAZUH_API_PASSWORD`
+   - `reports-mailbox.env` — SMTP/IMAP hosts + `REPORTS_MAILBOX_PW`
+2. **Credentials reach processes via PrivateTmp.** The manager unit's
+   `ExecStartPre` writes `/tmp/soc-manager-mcp.env` (PrivateTmp'd, 600)
+   from the canonical secret; the unit loads it with
+   `EnvironmentFile=-/tmp/soc-manager-mcp.env`. Nothing secret lands in
+   the journal.
+3. **The Wazuh manager container bind-mounts the mailbox env** — deleting
+   the host file does not unmount it (inode stays alive), which is also
+   how you recover it:
+
+   ```bash
+   docker exec wazuh-stack-wazuh.manager-1 cat /etc/reports-mailbox.env \
+     > /home/wez/.openclaw/soc/secrets/reports-mailbox.env
+   chmod 600 /home/wez/.openclaw/soc/secrets/reports-mailbox.env
+   ```
+
+## Rotating the Wazuh API password (lost-secret procedure)
+
+Wazuh 4.14 stores API user hashes as **werkzeug scrypt** strings —
+*not* bcrypt. Verify format first (`scrypt:` prefix). Rotate without
+knowing the old one:
+
+```bash
+# 1. new random secret
+openssl rand -base64 18    # 24 chars; store it in wazuh-manager-api.env
+
+# 2. hash with the CONTAINER's werkzeug (version-matched):
+PW='<new secret>'
+docker exec -i wazuh-stack-wazuh.manager-1 /var/ossec/framework/python/bin/python3 \
+  -c 'import sys; from werkzeug.security import generate_password_hash; \
+      print(generate_password_hash(sys.stdin.read().strip(), method="scrypt"))' <<< "$PW"
+
+# 3. swap it into the RBAC database:
+docker cp wazuh-stack-wazuh.manager-1:/var/ossec/api/configuration/security/rbac.db /tmp/rbac.db
+python3 -c "import sqlite3; ..."   # UPDATE users SET password=<hash> WHERE username='wazuh-wui'
+docker cp /tmp/rbac.db wazuh-stack-wazuh.manager-1:/var/ossec/api/configuration/security/rbac.db
+docker exec wazuh-stack-wazuh.manager-1 chown wazuh:wazuh \
+  /var/ossec/api/configuration/security/rbac.db
+docker restart wazuh-stack-wazuh.manager-1
+
+# 4. verify (status code 200 = good)
+curl -sk -o /dev/null -w "%{http_code}\n" -u "wazuh-wui:<new>" \
+  -X POST https://127.0.0.1:55000/security/user/authenticate
+```
+
+(There is also `/var/ossec/bin/rbac_control change-password`, but it is
+interactive-only.)
+
+## Systemd failure modes worth knowing
+
+| Result | Cause | Prevented by |
+|---|---|---|
+| `status=226/NAMESPACE`, no journal | `ReadWritePaths` points at a missing dir | installer pre-creates every data dir |
+| `Result: resources` | missing `ExecStartPre` binary or mandatory `EnvironmentFile` | installer writes glue before enabling units; `-` prefix on optional files |
+| creds silently missing (`missing: [...]` in `/healthz`) | env file written by ExecStartPre never loaded | the manager unit carries
+  `EnvironmentFile=-/tmp/soc-manager-mcp.env` — keep that line if you edit units |
+
+## Exposure posture
+
+- All MCP servers bind **0.0.0.0** in the shipped templates for LAN
+  dashboard use; if the dashboard is only used locally, flip
+  `SOC_MANAGER_BIND=loopback` (default) and keep the others firewalled.
+- Wazuh API (55000) and indexer (9200) are TLS with self-signed certs;
+  the stack sets `SOC_MANAGER_MCP_VERIFY=0` by default — turn it on
+  (`=1`) once you distribute a real CA.
+- The mailbox is one-way (SMTP out + IMAP triage of replies from an
+  allowlisted set). Never let it receive anything that auto-executes.
+
+## LLM safety posture
+
+- Every LLM call is audited (`lib/soc_audit.py`) — runtime, agent,
+  input kind, outcome — feeding the dashboard's Scores view.
+- Triage failures degrade to "route to digest for human review" and open
+  a ticket; they never silently drop an alert.
+- Mutations (agent restarts) are gated behind
+  `SOC_MANAGER_MCP_ALLOW_MUTATIONS=1` and default off.
