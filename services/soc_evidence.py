@@ -152,6 +152,34 @@ def _filter_day(records: List[Dict[str, Any]], day: str) -> List[Dict[str, Any]]
 # ---------------------------------------------------------------------------
 # Evidence collectors (per control)
 # ---------------------------------------------------------------------------
+# 2026-09-13: the stig-rules classifier catalogues emit NIST 800-53
+# control ids (e.g. AU-2) while this module's catalogue uses CMMC
+# assessment ids (e.g. AU.L1-3.3.001). Map each 800-53 id to the CMMC
+# controls whose title/800-171 mapping it corresponds to. An 800-53
+# control with no matching CMMC practice stays unmapped (honest: the
+# finding is recorded, just not scored).
+_CONTROL_ALIASES = {
+    "AC-2": ["AC.L1-3.1.002"],      # Account Management
+    "AC-3": ["AC.L1-3.1.003"],      # Access Enforcement
+    "AC-7": [],                      # unsuccessful logon — no L1 practice
+    "AU-2": ["AU.L1-3.3.001"],      # Audit Events
+    "AU-9": ["AU.L1-3.3.003"],      # Protect Audit Information
+    "IA-5": ["IA.L1-3.5.002", "IA.L2-3.5.005"],
+    "CM-7": [],                      # least functionality — no CM practice
+    "SC-7": ["SC.L1-3.13.002"],     # Boundary Protection
+}
+
+
+def _cid_match(cid: str, other: Any) -> bool:
+    """True when evidence control id `other` matches catalogue control
+    id `cid` directly or via the 800-53 alias table."""
+    if not isinstance(other, str):
+        return False
+    if other == cid:
+        return True
+    return cid in _CONTROL_ALIASES.get(other, [])
+
+
 def _collect_from_audit_log(audit: List[Dict[str, Any]],
                             control: Dict[str, Any],
                             day: str) -> List[Dict[str, Any]]:
@@ -169,7 +197,7 @@ def _collect_from_audit_log(audit: List[Dict[str, Any]],
         # Direct evidence tag (future: agents tag records
         # with extra.stig_evidence.control_id=...)
         se = extra.get("stig_evidence")
-        if isinstance(se, dict) and se.get("control_id") == cid:
+        if isinstance(se, dict) and _cid_match(cid, se.get("control_id")):
             out.append({
                 "source": "audit_log",
                 "kind": "stig_evidence",
@@ -183,7 +211,7 @@ def _collect_from_audit_log(audit: List[Dict[str, Any]],
             continue
         # E2 trail
         sdr = extra.get("stig_remediate_applied")
-        if isinstance(sdr, dict) and sdr.get("control_id") == cid:
+        if isinstance(sdr, dict) and _cid_match(cid, sdr.get("control_id")):
             out.append({
                 "source": "audit_log",
                 "kind": "stig_remediate_applied",
@@ -196,7 +224,7 @@ def _collect_from_audit_log(audit: List[Dict[str, Any]],
             })
             continue
         sdr = extra.get("stig_remediate_refused")
-        if isinstance(sdr, dict) and sdr.get("control_id") == cid:
+        if isinstance(sdr, dict) and _cid_match(cid, sdr.get("control_id")):
             out.append({
                 "source": "audit_log",
                 "kind": "stig_remediate_refused",
@@ -209,7 +237,7 @@ def _collect_from_audit_log(audit: List[Dict[str, Any]],
             })
             continue
         sdr = extra.get("stig_remediate_rolled_back")
-        if isinstance(sdr, dict) and sdr.get("control_id") == cid:
+        if isinstance(sdr, dict) and _cid_match(cid, sdr.get("control_id")):
             out.append({
                 "source": "audit_log",
                 "kind": "stig_remediate_rolled_back",
@@ -346,8 +374,13 @@ def _derive_status(control: Dict[str, Any],
     has_pass = any(e.get("status") == "ok" or e.get("kind")
                    in ("stig_remediate_applied", "snapshot")
                    for e in evidence)
+    # stig_evidence rows are STIG findings — non-compliance evidence
+    # until a remediation pass confirms otherwise (2026-09-13: the
+    # old heuristic graded them neutral, so controls with 48 live
+    # findings stayed manual_review forever).
     has_fail = any(e.get("status") == "fail" or
-                   e.get("kind") in ("stig_remediate_refused",)
+                   e.get("kind") in ("stig_remediate_refused",
+                                     "stig_evidence")
                    for e in evidence)
     if has_fail and not has_pass:
         return "fail"
