@@ -482,9 +482,13 @@ def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
 
     stig = tool_stig_host_view({"host": name})
 
-    _, minfo = _http_post(f"{c2}/tools/get_manager_info", {})
-    mutations = bool((minfo or {}).get("mutations_enabled")) \
-        if isinstance(minfo, dict) else False
+    # mutations gate: read the manager's /healthz, which reports the
+    # SOC_MANAGER_MCP_ALLOW_MUTATIONS state directly. (2026-09-13 fix:
+    # get_manager_info returns raw Wazuh /manager/info data, which has
+    # no mutations key — the Run Scan button was permanently disabled.)
+    mcode, mbody = _http_get(f"{c2}/healthz", timeout=5.0)
+    mutations = bool((mbody or {}).get("mutations_enabled")) \
+        if mcode == 200 and isinstance(mbody, dict) else False
 
     return {
         "ok": True,
