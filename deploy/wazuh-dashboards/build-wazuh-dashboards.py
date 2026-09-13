@@ -378,16 +378,23 @@ def lvl12():
 # Output + import
 # ---------------------------------------------------------------------------
 
+def to_ui_format(o):
+    """Saved-object import format (Dashboards UI: Management -> Saved
+    Objects -> Import, and the _import API)."""
+    src = o["_source"]
+    t = src["type"]
+    short_id = o["_id"].split(":", 1)[1]
+    attrs = dict(src[t])
+    return json.dumps({
+        "type": t, "id": short_id, "attributes": attrs,
+        "references": src.get("references", []),
+        "migrationVersion": src.get("migrationVersion", {}),
+    })
+
+
 def to_ndjson(objs):
-    lines = []
-    for o in objs:
-        lines.append(json.dumps({"index": {"_index": ".kibana",
-                                           "_id": o["_id"]}}))
-        src = dict(o["_source"])
-        src.pop("updated_at", None)
-        src.pop("version", None)
-        lines.append(json.dumps(src))
-    return "\n".join(lines) + "\n"
+    """One JSON object per line (UI import format)."""
+    return "\n".join(to_ui_format(o) for o in objs) + "\n"
 
 
 def import_objects(objs):
