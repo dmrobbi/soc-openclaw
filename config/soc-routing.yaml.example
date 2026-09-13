@@ -1,0 +1,164 @@
+# SOC per-tenant routing configuration (Track D, D3).
+#
+# This file is the canonical source of truth for per-tenant
+# behaviour across the SOC fleet. Loaded by:
+#
+#   - soc_decision.py (per-call: auto-remediation threshold,
+#     allowed actions, blocked source IPs)
+#   - soc_safety_decider.py (per-call: severity escalation,
+#     quiet hours, allowed actions)
+#   - soc_realtime_shipper.py (per-record: which channels to
+#     dispatch to for which severity)
+#   - soc_daily_decisions.py (per-run: tenant breakdown)
+#   - the future E3 STIG catalogue loader (per-rule: which
+#     STIG controls apply to which tenants)
+#   - the future D2 web dashboard (per-page: per-tenant view)
+#
+# Schema is validated by soc_routing.py on load. Bad files
+# fail loudly at startup rather than silently misbehaving
+# during an incident.
+#
+# This is the *default* tenant. The fleet has two tenants
+# today (bedimsecurity + stsgym). Add more by appending a
+# `tenants:` block below with a new key.
+
+# Default settings applied to every tenant that doesn't
+# override them. Keep this minimal — explicit is better.
+defaults:
+  # The auto-remediation threshold (B1 / B3). Decisions with
+  # confidence >= this AND severity in `auto_remediation_severities`
+  # are eligible for the confidence-gated iptables block.
+  # Below it: routed to the human-in-the-loop queue (D4) or
+  # to the notification channels below.
+  auto_remediation_threshold: 0.85
+
+  # Severities eligible for auto-remediation. Anything not in
+  # this list never auto-remediates, regardless of confidence.
+  auto_remediation_severities: [high, critical]
+
+  # Notification channels. Each is keyed by `recommended_response`
+  # (the value the LLM produces). Channels available:
+  #   - email     (SOC digest / notification)
+  #   - page      (PagerDuty / on-call rotation)
+  #   - digest    (daily report only — no per-incident notify)
+  #   - log       (audit log only)
+  notification_routing:
+    page:       [page]
+    email:      [email]
+    digest_only: [digest]
+    note_only:  [log]
+    auto_remediate: [page, email, log]
+
+  # Recipients per channel. Substituted into templates below.
+  recipients:
+    email:
+      primary: soc@bedimsecurity.com
+      security_team: security@bedimsecurity.com
+    page:
+      oncall_primary: wlrobbi@bedimsecurity.com
+      oncall_secondary: ops@bedimsecurity.com
+    digest:
+      stakeholders: leadership@bedimsecurity.com
+    log:
+      audit_target: /var/log/soc/audit.jsonl
+
+  # Quiet hours: during these windows, only page-level alerts
+  # are sent (no email/digest). Format: HH:MM 24-hour, in
+  # the tenant's timezone.
+  quiet_hours:
+    enabled: true
+    start: "22:00"
+    end: "07:00"
+    timezone: America/New_York
+    overrides: [critical]   # severities that always wake
+
+  # Allowed actions. Anything not listed is refused. This is
+  # the per-tenant gate for B3 (auto-remediate), D4 (page),
+  # and any future action that has a side effect.
+  allowed_actions:
+    - note_only
+    - digest_only
+    - email
+    - page
+    - auto_remediate
+
+  # Blocked source IPs. The safety decider will never
+  # auto-remediate against a block whose source is here
+  # (e.g. an internal service IP that fires false positives).
+  blocked_source_ips: []
+
+  # STIG / CMMC catalogue scope. The future E3 loader reads
+  # this to know which controls apply to this tenant.
+  #   - applicability_tags: list of NIST 800-53 control
+  #     families that apply (e.g. AC, AU, IA, SC, SI)
+  #   - baseline: STIG benchmark to use. Today we only
+  #     support "moderate" (default) and "high".
+  stig:
+    applicability_tags: [AC, AU, IA, SC, SI]
+    baseline: moderate
+
+# Per-tenant overrides. Any field may be omitted; the
+# `defaults:` block fills in the rest.
+tenants:
+  bedimsecurity:
+    display_name: "Example SOC (primary tenant)"
+    auto_remediation_threshold: 0.85
+    # SOC Phase 4 (2026-08-17): per-tenant pattern whitelist.
+    # Add patterns one at a time. Each must be a .py file
+    # stem under scripts/soc/soc-remediations/. The
+    # dispatcher will only auto-apply patterns listed here,
+    # AFTER the existing can_auto_remediate() check passes.
+    allow_auto_remediate_patterns: []
+    notification_routing:
+      # bedimsecurity is the prod tenant — we want every
+      # `page` to also email the security team so there's a
+      # written record.
+      page: [page, email]
+      email: [email]
+      digest_only: [digest]
+      note_only: [log]
+      auto_remediate: [page, email, log]
+    recipients:
+      email:
+        primary: soc@bedimsecurity.com
+        security_team: security@bedimsecurity.com
+        legal: legal@bedimsecurity.com
+      page:
+        oncall_primary: wlrobbi@bedimsecurity.com
+        oncall_secondary: ops@bedimsecurity.com
+    stig:
+      applicability_tags: [AC, AU, IA, SC, SI, CM, CP, IR, MA, MP, PE, PL, PS, RA, SA, SC, SI, PM]
+      baseline: high
+
+  stsgym:
+    display_name: "example.com (sandbox / demo tenant)"
+    auto_remediation_threshold: 0.95   # tighter; this is the demo
+    notification_routing:
+      # sandbox: no real pages, only digests and audit logs.
+      page: [log]
+      email: [email]
+      digest_only: [digest]
+      note_only: [log]
+      auto_remediate: [log, email]
+    recipients:
+      email:
+        primary: ops@stsgym.com
+        security_team: security@stsgym.com
+      page:
+        # never actually paged — only logged
+        oncall_primary: noc@stsgym.com
+      digest:
+        stakeholders: leadership@stsgym.com
+      log:
+        audit_target: /var/log/soc/audit.stsgym.jsonl
+    quiet_hours:
+      enabled: false   # 24/7 monitoring
+    allowed_actions:
+      # sandbox: no real auto-remediation
+      - note_only
+      - digest_only
+      - email
+      - log
+    stig:
+      applicability_tags: [AC, AU, IA, SC, SI]
+      baseline: moderate

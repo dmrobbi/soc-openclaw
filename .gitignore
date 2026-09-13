@@ -6,4 +6,4 @@ secrets/
 deploy/soc-stack.env
 *.db
 *.sqlite
-.DS_Store
+.DS_Storeconfig/soc-routing.yaml
