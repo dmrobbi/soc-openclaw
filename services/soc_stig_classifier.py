@@ -394,53 +394,79 @@ _FLEET_CACHE: Dict[str, Tuple[str, float]] = {}
 _FLEET_TTL = 300.0
 
 
+def _family_from_blob(blob: str) -> str:
+    b = (blob or "").lower()
+    if "ubuntu" in b:
+        return "ubuntu"
+    if any(s in b for s in ("rhel", "red hat", "redhat", "centos",
+                            "rocky", "fedora", "almalinux")):
+        return "rhel"
+    if "debian" in b:
+        return "debian"
+    return ""
+
+
 def _fleet_family(agent_name: str) -> str:
-    """OS family for an agent name via the C2 manager (cached)."""
+    """OS family for an agent name. Tries the C2 manager MCP first
+    (SOC_MANAGER_MCP_URL /tools/list_agents), then the C1 indexer MCP
+    (SOC_WAZUH_MCP_URL /tools/list_agent_os — reachable from inside
+    the Wazuh container where the loopback manager is not). Cached
+    5 min per agent; degrades to "" on any error."""
     import time as _t
     now = _t.time()
     hit = _FLEET_CACHE.get(agent_name)
     if hit and now - hit[1] < _FLEET_TTL:
         return hit[0]
     fam = ""
-    url = (os.environ.get("SOC_MANAGER_MCP_URL") or "").rstrip("/")
-    if url and agent_name:
+    attempts = []
+    m2 = (os.environ.get("SOC_MANAGER_MCP_URL") or "").rstrip("/")
+    if m2:
+        attempts.append((m2 + "/tools/list_agents", "manager"))
+    c1 = (os.environ.get("SOC_WAZUH_MCP_URL") or "").rstrip("/")
+    if c1:
+        attempts.append((c1 + "/tools/list_agent_os", "indexer"))
+    for url, _kind in attempts:
+        if not url or not agent_name:
+            continue
         try:
             import urllib.request as _ur
             req = _ur.Request(
-                url + "/tools/list_agents",
-                data=json.dumps({"limit": 200}).encode("utf-8"),
+                url,
+                data=json.dumps({"limit": 200} if _kind == "manager"
+                                else {}).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with _ur.urlopen(req, timeout=3.0) as resp:
-                rows = (json.loads(resp.read().decode("utf-8")) or {}).get(
-                    "agents") or []
+                data = json.loads(resp.read().decode("utf-8")) or {}
+            rows = data.get("agents") or []
             for row in rows:
-                if str(row.get("name") or "") == agent_name:
-                    osinfo = row.get("os")
-                    if isinstance(osinfo, dict):
-                        blob = " ".join([
-                            str(osinfo.get("platform") or ""),
-                            str(osinfo.get("name") or ""),
-                            str(row.get("os_name") or ""),
-                        ]).lower()
-                    else:
-                        # manager-mcp flattens os to a string ("ubuntu")
-                        blob = " ".join([
-                            str(osinfo or ""),
-                            str(row.get("os_name") or ""),
-                        ]).lower()
-                    if "ubuntu" in blob:
-                        fam = "ubuntu"
-                    elif any(s in blob for s in (
-                            "rhel", "red hat", "redhat", "centos",
-                            "rocky", "fedora", "almalinux")):
-                        fam = "rhel"
-                    elif "debian" in blob:
-                        fam = "debian"
-                    break
+                if str(row.get("name") or "") != agent_name:
+                    continue
+                osinfo = row.get("os")
+                if isinstance(osinfo, dict):
+                    blob = " ".join([
+                        str(osinfo.get("platform") or ""),
+                        str(osinfo.get("name") or ""),
+                        str(row.get("os_name") or ""),
+                    ]).lower()
+                else:
+                    # manager-mcp flattens os to a string ("ubuntu")
+                    blob = " ".join([
+                        str(osinfo or ""),
+                        str(row.get("os_name") or ""),
+                    ]).lower()
+                if _kind == "indexer":
+                    blob = " ".join([
+                        str(row.get("os_platform") or ""),
+                        str(row.get("os_name") or ""),
+                    ]).lower()
+                fam = _family_from_blob(blob)
+                break
+            if fam:
+                break
         except Exception:
-            fam = ""
+            continue
     _FLEET_CACHE[agent_name] = (fam, now)
     return fam
 

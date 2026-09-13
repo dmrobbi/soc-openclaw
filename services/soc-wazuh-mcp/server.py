@@ -61,7 +61,7 @@ DEFAULT_INDEXER_URL = "https://127.0.0.1:9200"
 MAX_HITS = 1000            # hard cap on _search size
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 TOOLS = ("search_alerts", "get_recent_alerts_for_host",
-         "get_rule_metadata", "get_agent_status")
+         "get_rule_metadata", "get_agent_status", "list_agent_os")
 
 # Host name validation: 1-253 chars, RFC-1123-ish. We are
 # deliberately lax because SOC agents need to query by IP too.
@@ -275,6 +275,43 @@ def tool_get_rule_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def tool_list_agent_os(args: Dict[str, Any]) -> Dict[str, Any]:
+    """list_agent_os() -> {ok, agents: [{id, name, status, os_platform,
+    os_name}]}.
+
+    Reads the wazuh-monitoring-* index (the manager pushes an agent
+    inventory snapshot there) and returns the most recent row per
+    agent. Added 2026-09-13 so the STIG classifier (running inside
+    the Wazuh manager container, where the loopback-bound manager
+    MCP is unreachable) can resolve each agent's OS family via C1.
+    """
+    body = {
+        "size": 100,
+        "query": {"match_all": {}},
+        "sort": [{"timestamp": {"order": "desc"}}],
+        "collapse": {"field": "id"},
+        "_source": ["id", "name", "status", "os.platform", "os.name",
+                    "lastKeepAlive"],
+    }
+    res = _post_search(body, index="wazuh-monitoring-*")
+    out = []
+    for h in (res.get("hits", {}).get("hits") or []):
+        src = h.get("_source") or {}
+        osinfo = src.get("os") or {}
+        if not isinstance(osinfo, dict):
+            osinfo = {}
+        out.append({
+            "id": str(src.get("id") or ""),
+            "name": str(src.get("name") or ""),
+            "status": str(src.get("status") or ""),
+            "os_platform": str(osinfo.get("platform") or ""),
+            "os_name": str(osinfo.get("name") or ""),
+            "last_keepalive": str(src.get("lastKeepAlive") or ""),
+        })
+    return {"ok": True, "tool": "list_agent_os", "agents": out,
+            "total": len(out)}
+
+
 def tool_get_agent_status(args: Dict[str, Any]) -> Dict[str, Any]:
     """get_agent_status(agent_id) -> {ok, agent_id, last_seen, level_dist}.
 
@@ -331,9 +368,10 @@ def tool_get_agent_status(args: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Indexer client
 # ---------------------------------------------------------------------------
-def _post_search(body: Dict[str, Any], expect_aggs: bool = False) -> Dict[str, Any]:
+def _post_search(body: Dict[str, Any], expect_aggs: bool = False,
+                 index: str = "wazuh-alerts-*") -> Dict[str, Any]:
     """POST a _search to the indexer. Returns the raw response dict."""
-    url = f"{_indexer_url()}/wazuh-alerts-*/_search"
+    url = f"{_indexer_url()}/{index}/_search"
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -422,6 +460,7 @@ class _Handler(BaseHTTPRequestHandler):
             "get_recent_alerts_for_host": tool_get_recent_alerts_for_host,
             "get_rule_metadata": tool_get_rule_metadata,
             "get_agent_status": tool_get_agent_status,
+            "list_agent_os": tool_list_agent_os,
         }[tool]
         try:
             result = impl(args)
