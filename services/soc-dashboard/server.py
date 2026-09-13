@@ -643,7 +643,7 @@ def tool_run_fleet_scan(args: Dict[str, Any]) -> Dict[str, Any]:
     # 3. fleet-wide score recompute
     scores = {}
     try:
-        sys.path.insert(0, os.path.join(soc_dir, "services"))
+        sys.path.insert(0, soc_dir)  # services/ dir — see note in tool_compliance_report
         from soc_score import tool_score_all_tenants
         scores = tool_score_all_tenants({})
     except Exception as e:
