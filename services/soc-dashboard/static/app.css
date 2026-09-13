@@ -128,3 +128,15 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
 .btn:hover { background: #262c36; text-decoration: none; border-color: var(--accent); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+/* Task pane bottom bar (2026-09-13) — vCenter-style running/recent tasks. */
+.taskbar { position: fixed; bottom: 0; left: 0; right: 0; display: flex;
+  gap: 20px; align-items: center; padding: 8px 24px;
+  background: var(--bg-elev); border-top: 1px solid var(--border);
+  font-size: 12px; z-index: 30; overflow-x: auto; min-height: 34px; }
+.taskbar .tb-item { color: var(--fg-dim); white-space: nowrap; }
+.taskbar .tb-item.ok { color: var(--good); }
+.taskbar .tb-item.fail { color: var(--bad); }
+.taskbar .tb-item.run { color: var(--warn); font-weight: 600; }
+.taskbar .tb-all { margin-left: auto; color: var(--accent); white-space: nowrap; }
+main { padding-bottom: 56px; }
