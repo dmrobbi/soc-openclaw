@@ -30,6 +30,20 @@ curl -sk -u wazuh-wui:<API_PASSWORD> https://127.0.0.1:55000/security/user/authe
 Set the manager API password before first start (or rotate later via
 `rbac_control` — see docs/security-notes.md).
 
+## 1b. Stock the Wazuh dashboards
+
+Right after the stack comes up, load the SOC dashboards (11 dashboards /
+56 visualizations, built from the live index mappings):
+
+```bash
+cd deploy/wazuh-dashboards && python3 build-wazuh-dashboards.py --import
+```
+
+Details, manual UI import, and the reload-after-rebuild flow:
+docs/wazuh-dashboards.md. After the first agents enroll, skim
+docs/cve-packages.md (per-host CVE review) and
+docs/openscap-scanning.md (compliance scans → evidence → scores).
+
 ## 2. Secrets
 
 Create `SOC_SECRETS_DIR` (default `/home/$SOC_USER/.openclaw/soc/secrets`),
