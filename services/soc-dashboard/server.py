@@ -520,7 +520,8 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
     day = args.get("day") or __import__("datetime").datetime.now(
         __import__("datetime").timezone.utc).strftime("%Y-%m-%d")
     soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, os.path.join(soc_dir, "services"))
+    # soc_dir is the services/ dir (server.py sits one level below it).
+    sys.path.insert(0, soc_dir)
     from soc_score import tool_score_all_tenants, tool_dashboard_score
     try:
         from soc_evidence import tool_evidence_summary
@@ -570,7 +571,7 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
 def tool_stig_report(args: Dict[str, Any]) -> Dict[str, Any]:
     """stig_report() -> full STIG findings list + catalogue summary."""
     code4 = os.environ.get("SOC_DASHBOARD_C4_URL", DEFAULT_C4_URL)
-    _, findings = _http_post(f"{code4}/tools/stig_findings", {}, timeout=15.0)
+    _, findings = _http_post(f"{code4}/tools/query_stig_findings", {}, timeout=15.0)
     cat_path = os.environ.get(
         "SOC_STIG_CATALOGUE",
         os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -624,7 +625,7 @@ def tool_run_fleet_scan(args: Dict[str, Any]) -> Dict[str, Any]:
     # 2. compliance evidence harvest for every known tenant
     ev_summary = {}
     try:
-        sys.path.insert(0, os.path.join(soc_dir, "services"))
+        sys.path.insert(0, soc_dir)  # services/ dir — see note in tool_compliance_report
         from soc_evidence import tool_collect_evidence, tool_evidence_summary
         from soc_routing import get_config
         for tid in get_config().known_tenants():
