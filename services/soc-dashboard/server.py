@@ -833,7 +833,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         # SPA-style routes: serve index.html so the client
         # can render the page.
-        if re.match(r"^/(tenants|agents|runs)/[A-Za-z0-9_.-]+/?$", path):
+        if re.match(r"^/(tenants|agents|runs|fleet)/[A-Za-z0-9_.-]+/?$", path):
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
