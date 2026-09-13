@@ -120,3 +120,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
 .score-bar .score-fill.good { background: var(--good); }
 .score-bar .score-fill.warn { background: var(--warn); }
 .score-bar .score-fill.bad  { background: var(--bad); }
+
+/* Buttons (2026-09-13) — run-scan / compliance / view-STIG actions. */
+.btn { display: inline-block; padding: 7px 16px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg-elev-2); color: var(--fg);
+  font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; }
+.btn:hover { background: #262c36; text-decoration: none; border-color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }

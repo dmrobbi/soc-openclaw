@@ -76,6 +76,14 @@
     let data;
     try { data = await api("/tools/fleet_status", "POST", {}); }
     catch (e) { return errorView(e); }
+    // STIG findings per host (single C4 call; feeds the STIG column).
+    // Non-fatal: the fleet page renders without counts if C4 hiccups.
+    let stigByHost = {};
+    try {
+      const sq = await api("/tools/query_stig_findings", "POST",
+                           { time_range: "30d", limit: 1 });
+      stigByHost = (sq && sq.by_host) || {};
+    } catch (e) { /* ignore */ }
     const s = data.summary || {};
     const rows = data.agents || [];
     const nodes = [
@@ -97,7 +105,7 @@
         card("Unknown status", s.unknown_status || 0, "dim"),
       ),
       el("div", { class: "section" },
-        fleetTable(rows),
+        fleetTable(rows, stigByHost),
       ),
       el("p", { class: "muted" },
         "Source: C2 manager-mcp (",
@@ -109,7 +117,8 @@
     return nodes;
   }
 
-  function fleetTable(rows) {
+  function fleetTable(rows, stigByHost) {
+    stigByHost = stigByHost || {};
     if (!rows.length) {
       return el("p", { class: "empty" },
         "No agents returned by C2 manager-mcp. ",
@@ -141,6 +150,7 @@
         el("th", null, "os"),
         el("th", null, "keepalive"),
         el("th", null, "staleness"),
+        el("th", null, "STIG (30d)"),
       )),
       el("tbody", null, ...sorted.map(r => {
         const isMgr = r.last_keepalive && r.last_keepalive.startsWith("9999");
@@ -167,6 +177,13 @@
           el("td", null, r.os || "-"),
           el("td", null, fmtTime(r.last_keepalive)),
           el("td", null, staleness),
+          el("td", null, el("a", {
+            href: "/stig/host/" + encodeURIComponent(r.name || r.id),
+            "data-link": "",
+            title: "STIG findings for " + (r.name || r.id),
+          }, badge((stigByHost[r.name] || 0) > 0
+            ? String(stigByHost[r.name]) + " warn"
+            : "0 dim"))),
         );
       })),
     );
@@ -188,30 +205,58 @@
         card("Version", a.version || "-", ""),
         card("Group", (a.group || []).join(", ") || "-", ""),
         card("Last keepalive", fmtTime(a.last_keepalive) || "-", ""),
+        card("STIG findings (30d)", stig.total ?? 0,
+             (stig.total ?? 0) > 0 ? "warn" : "dim"),
       ),
       el("div", { class: "section" },
         el("h2", null, "Scan control"),
         el("p", { class: "muted" },
           "Runs the Wazuh agent-restart active response on this host: the agent reconnects within ~30 s and immediately starts a fresh syscheck/FIM integrity scan; the vulnerability detector re-runs."),
-        el("button", {
-          class: "btn",
-          onclick: async (ev) => {
-            ev.preventDefault();
-            if (!confirm("Trigger scan on " + (a.name || agentId) + "? (agent restart)")) return;
-            ev.target.disabled = true;
-            ev.target.textContent = "triggering…";
-            try {
-              const r = await api("/tools/run_scan", "POST", { agent_id: agentId });
-              ev.target.textContent = r.ok ? "scan triggered ✓" : "failed: " + (r.error || "?");
-            } catch (e) {
-              ev.target.textContent = "failed: " + (e.message || e);
-            }
-            setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Run scan now"; }, 8000);
-          },
-        }, "Run scan now"),
+        el("div", { class: "btn-row" },
+          el("button", {
+            class: "btn",
+            onclick: async (ev) => {
+              ev.preventDefault();
+              if (!confirm("Trigger scan on " + (a.name || agentId) + "? (agent restart)")) return;
+              ev.target.disabled = true;
+              ev.target.textContent = "triggering…";
+              try {
+                const r = await api("/tools/run_scan", "POST", { agent_id: agentId });
+                ev.target.textContent = r.ok ? "scan triggered ✓" : "failed: " + (r.error || "?");
+              } catch (e) {
+                ev.target.textContent = "failed: " + (e.message || e);
+              }
+              setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Run scan now"; }, 8000);
+            },
+          }, "Run scan now"),
+          el("button", {
+            class: "btn",
+            onclick: async (ev) => {
+              ev.preventDefault();
+              if (!confirm("Re-run compliance scan on " + (a.name || agentId) + "? (agent restart + evidence + score recompute)")) return;
+              ev.target.disabled = true;
+              ev.target.textContent = "running compliance scan…";
+              try {
+                const r = await api("/tools/run_host_compliance_scan", "POST", { agent_id: agentId });
+                if (r.ok) {
+                  const t = (r.tenants_scanned || []).join(", ") || "?";
+                  ev.target.textContent = "done ✓ (evidence: " + t + ")";
+                } else {
+                  ev.target.textContent = "failed: " + (r.error || "?");
+                }
+              } catch (e) {
+                ev.target.textContent = "failed: " + (e.message || e);
+              }
+              setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Re-run compliance scan"; }, 8000);
+            },
+          }, "Re-run compliance scan"),
+          el("a", { class: "btn", href: "/stig/host/" + encodeURIComponent(a.name || agentId),
+                   "data-link": "", title: "STIG findings for this host (30d)" },
+            "View STIG findings"),
+        ),
         data.mutations_enabled
           ? null
-          : el("p", { class: "muted" }, "Note: manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 not set) — the button will fail until enabled."),
+          : el("p", { class: "muted" }, "Note: manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 not set) — the scan buttons will fail until enabled."),
       ),
       el("div", { class: "section" },
         el("h2", null, "Recent alerts" + (alerts.length ? " (" + alerts.length + ")" : " (none)")),
@@ -231,12 +276,24 @@
           : el("p", { class: "empty" }, "No alerts recorded for this host yet."),
       ),
       el("div", { class: "section" },
-        el("h2", null, "STIG findings"),
+        el("h2", null, "STIG findings (last 30d)"),
         stig.ok
-          ? el("p", { class: "muted" },
-              (stig.total ?? 0) + " findings · " +
-              (stig.unique_controls ?? 0) + " controls · " +
-              "see " + el("a", { href: "/stig/host/" + encodeURIComponent(a.name || agentId), "data-link": "" }, "STIG host view"))
+          ? el("div", null,
+              el("p", null,
+                el("strong", null, String(stig.total ?? 0) + " findings"),
+                " across " + (stig.unique_controls ?? 0) + " controls" +
+                (() => { const bs = Object.entries(stig.by_severity || {})
+                    .filter(([, n]) => n > 0)
+                    .map(([k, n]) => n + " " + k);
+                  return bs.length ? " — " + bs.join(", ") : ""; })()),
+              stig.total > 0
+                ? el("a", { class: "btn", href: "/stig/host/" + encodeURIComponent(a.name || agentId),
+                           "data-link": "" }, "View STIG findings →")
+                : el("p", { class: "muted" },
+                    "No STIG-relevant alerts matched the catalogue rules for this host in the window. ",
+                    "Findings appear when a L12+ alert maps to a ",
+                    el("code", null, "config/stig-rules/"), " entry."),
+            )
           : el("p", { class: "empty" }, "No STIG data for this host."),
       ),
       el("p", { class: "muted" },

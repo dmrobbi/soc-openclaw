@@ -91,6 +91,7 @@ DASHBOARD_TOOLS = (
     "stig_overview", "stig_findings",
     "stig_host_view",
     "fleet_host_view", "run_scan",
+    "run_host_compliance_scan",
     "compliance_report", "stig_report", "run_fleet_scan",
 )
 
@@ -663,6 +664,82 @@ def tool_run_fleet_scan(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def tool_run_host_compliance_scan(args: Dict[str, Any]) -> Dict[str, Any]:
+    """run_host_compliance_scan(agent_id) -> MUTATING + moderate.
+
+    Per-host re-run of the compliance pipeline (2026-09-13):
+      1. Scoped Wazuh agent restart (fresh syscheck/FIM + vuln detector
+         for that host only).
+      2. Evidence re-collect for every known tenant (today).
+      3. Fleet-wide compliance score recompute.
+    Gated on SOC_MANAGER_MCP_ALLOW_MUTATIONS, read from C2 /healthz.
+    """
+    aid = str(args.get("agent_id") or "").strip()
+    if not aid:
+        raise ValueError("agent_id is required")
+    c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    steps: List[Dict[str, Any]] = []
+    day = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).strftime("%Y-%m-%d")
+
+    mcode, mbody = _http_get(f"{c2}/healthz", timeout=5.0)
+    if mcode != 200 or not isinstance(mbody, dict) \
+            or not mbody.get("mutations_enabled"):
+        return {"ok": False, "tool": "run_host_compliance_scan",
+                "error": "mutations disabled on C2 manager "
+                         "(SOC_MANAGER_MCP_ALLOW_MUTATIONS)"}
+
+    code, body = _http_post(f"{c2}/tools/run_scan", {"agent_id": aid},
+                            timeout=15.0)
+    steps.append({"step": "scoped agent restart", "code": code,
+                  "ok": code == 200})
+    if code != 200:
+        return {"ok": False, "tool": "run_host_compliance_scan",
+                "error": f"run_scan failed (HTTP {code})",
+                "steps": steps}
+
+    # 2. evidence re-collect for every known tenant
+    tenants: List[str] = []
+    try:
+        sys.path.insert(0, soc_dir)  # services/ dir
+        from soc_routing import get_config
+        tenants = list(get_config().known_tenants())
+    except Exception as e:
+        steps.append({"step": "tenant resolution", "ok": False,
+                      "error": repr(e)})
+
+    ev: Dict[str, Any] = {}
+    try:
+        from soc_evidence import tool_collect_evidence
+        for tid in tenants:
+            try:
+                r = tool_collect_evidence({"tenant_id": tid, "day": day})
+                ev[tid] = {"counts": r.get("counts"),
+                           "total_controls": r.get("total_controls")}
+            except Exception as e:
+                ev[tid] = {"error": repr(e)}
+        steps.append({"step": "evidence re-collect", "ok": True,
+                      "tenants": ev})
+    except Exception as e:
+        steps.append({"step": "evidence re-collect", "ok": False,
+                      "error": repr(e)})
+
+    # 3. score recompute
+    scores: Dict[str, Any] = {}
+    try:
+        from soc_score import tool_score_all_tenants
+        scores = tool_score_all_tenants({})
+    except Exception as e:
+        scores = {"error": repr(e)}
+    steps.append({"step": "score recompute",
+                  "ok": "error" not in scores})
+
+    return {"ok": True, "tool": "run_host_compliance_scan",
+            "agent_id": aid, "steps": steps, "scores": scores,
+            "tenants_scanned": tenants}
+
+
 def tool_fleet_status(args: Dict[str, Any]) -> Dict[str, Any]:
     """fleet_status() -> one row per Wazuh agent, plus summary counts.
 
@@ -914,6 +991,7 @@ class _Handler(BaseHTTPRequestHandler):
             "stig_host_view": tool_stig_host_view,
             "fleet_host_view": tool_fleet_host_view,
             "run_scan": tool_run_scan_proxy,
+            "run_host_compliance_scan": tool_run_host_compliance_scan,
             "compliance_report": tool_compliance_report,
             "stig_report": tool_stig_report,
             "run_fleet_scan": tool_run_fleet_scan,
