@@ -522,7 +522,12 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
     soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.path.insert(0, os.path.join(soc_dir, "services"))
     from soc_score import tool_score_all_tenants, tool_dashboard_score
-    from soc_evidence import tool_evidence_summary
+    try:
+        from soc_evidence import tool_evidence_summary
+    except ImportError:
+        # soc_evidence lives in stsgym-work; not ported yet — degrade
+        # instead of crashing the whole report.
+        tool_evidence_summary = None
     routing_cfg = os.environ.get("SOC_ROUTING_CONFIG") or None
     tenants: List[str] = []
     try:
@@ -540,6 +545,9 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
             detail.append({"tenant_id": tid, "error": repr(e)})
     ev_rows: Dict[str, Any] = {}
     for tid in tenants:
+        if tool_evidence_summary is None:
+            ev_rows[tid] = {"note": "soc_evidence module not available in this deployment"}
+            continue
         try:
             ev_rows[tid] = tool_evidence_summary({"tenant_id": tid, "day": day})
         except Exception as e:
@@ -565,8 +573,9 @@ def tool_stig_report(args: Dict[str, Any]) -> Dict[str, Any]:
     _, findings = _http_post(f"{code4}/tools/stig_findings", {}, timeout=15.0)
     cat_path = os.environ.get(
         "SOC_STIG_CATALOGUE",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "config", "stig-catalogue.json"))
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+            "config", "stig-catalogue.json"))
     cat_summary: Dict[str, Any] = {}
     try:
         with open(cat_path, "r", encoding="utf-8") as f:
@@ -900,7 +909,16 @@ class _Handler(BaseHTTPRequestHandler):
             "stig_host_view": tool_stig_host_view,
             "fleet_host_view": tool_fleet_host_view,
             "run_scan": tool_run_scan_proxy,
-        }[tool]
+            "compliance_report": tool_compliance_report,
+            "stig_report": tool_stig_report,
+            "run_fleet_scan": tool_run_fleet_scan,
+        }.get(tool)
+        if impl is None:
+            # Allowed in DASHBOARD_TOOLS but not dispatchable — fail clean
+            # instead of KeyError-aborting the connection.
+            self._json(404, {"ok": False, "error": f"unknown tool: {tool}"})
+            self._log("POST", 404, (time.monotonic() - t0) * 1000)
+            return
         try:
             result = impl(args)
         except ValueError as e:
