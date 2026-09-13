@@ -443,6 +443,35 @@ def tool_run_scan(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def tool_restart_fleet(args: Dict[str, Any]) -> Dict[str, Any]:
+    """restart_fleet() -> MUTATING. Restart the Wazuh agent daemon on
+    EVERY reachable managed agent (empty agents_list = all).
+
+    Use case: the SOC "run a full compliance and vulnerability scan"
+    control — on reconnect every agent starts a fresh syscheck/FIM
+    integrity scan and the vulnerability detector re-runs.
+
+    Disabled unless SOC_MANAGER_MCP_ALLOW_MUTATIONS=1. Fleet-wide:
+    expect every reachable agent to drop off Fleet for a few seconds.
+    """
+    res_status, body = _CLIENT.request(
+        "PUT", "/agents/restart",
+        body={},
+        mutate=True,
+    )
+    if res_status != 200:
+        raise RuntimeError(f"fleet restart HTTP {res_status}: {body!r}")
+    affected = (body.get("data", {}).get("affected_items", [])
+                if isinstance(body, dict) else [])
+    return {
+        "ok": True,
+        "tool": "restart_fleet",
+        "restarted": affected,
+        "note": "all reachable agents restarted; each runs a fresh "
+                "syscheck/FIM scan + vulnerability re-detection on reconnect",
+    }
+
+
 # ---------------------------------------------------------------------------
 # HTTP layer
 # ---------------------------------------------------------------------------

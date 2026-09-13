@@ -91,6 +91,7 @@ DASHBOARD_TOOLS = (
     "stig_overview", "stig_findings",
     "stig_host_view",
     "fleet_host_view", "run_scan",
+    "compliance_report", "stig_report", "run_fleet_scan",
 )
 
 
@@ -510,6 +511,142 @@ def tool_run_scan_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "tool": "run_scan",
                 "error": f"C2 manager returned {code}: {err}"}
     return body
+
+
+def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
+    """compliance_report(day=None) -> full per-tenant, per-control
+    compliance report: scores + evidence status + applicable controls,
+    plus the STIG findings overview for the same window."""
+    day = args.get("day") or __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).strftime("%Y-%m-%d")
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.join(soc_dir, "services"))
+    from soc_score import tool_score_all_tenants, tool_dashboard_score
+    from soc_evidence import tool_evidence_summary
+    routing_cfg = os.environ.get("SOC_ROUTING_CONFIG") or None
+    tenants: List[str] = []
+    try:
+        if routing_cfg:
+            sys.path.insert(0, soc_dir)
+            from soc_routing import get_config
+            tenants = list(get_config().known_tenants())
+    except Exception:
+        tenants = []
+    detail = []
+    for tid in tenants:
+        try:
+            detail.append(tool_dashboard_score({"tenant_id": tid}))
+        except Exception as e:
+            detail.append({"tenant_id": tid, "error": repr(e)})
+    ev_rows: Dict[str, Any] = {}
+    for tid in tenants:
+        try:
+            ev_rows[tid] = tool_evidence_summary({"tenant_id": tid, "day": day})
+        except Exception as e:
+            ev_rows[tid] = {"error": repr(e)}
+    code4 = os.environ.get("SOC_DASHBOARD_C4_URL", DEFAULT_C4_URL)
+    try:
+        _, stig = _http_post(f"{code4}/tools/stig_findings", {})
+    except Exception as e:
+        stig = {"error": repr(e)}
+    return {
+        "ok": True,
+        "tool": "compliance_report",
+        "day": day,
+        "tenants": detail,
+        "evidence_summary": ev_rows,
+        "stig_findings": stig if isinstance(stig, dict) else {"raw": stig},
+    }
+
+
+def tool_stig_report(args: Dict[str, Any]) -> Dict[str, Any]:
+    """stig_report() -> full STIG findings list + catalogue summary."""
+    code4 = os.environ.get("SOC_DASHBOARD_C4_URL", DEFAULT_C4_URL)
+    _, findings = _http_post(f"{code4}/tools/stig_findings", {}, timeout=15.0)
+    cat_path = os.environ.get(
+        "SOC_STIG_CATALOGUE",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "config", "stig-catalogue.json"))
+    cat_summary: Dict[str, Any] = {}
+    try:
+        with open(cat_path, "r", encoding="utf-8") as f:
+            cat = json.load(f)
+        controls = cat.get("controls", [])
+        fams = {}
+        for c in controls:
+            fam = str(c.get("family") or "misc")
+            fams[fam] = fams.get(fam, 0) + 1
+        cat_summary = {"catalogue": cat_path, "controls": len(controls),
+                       "families": fams}
+    except Exception as e:
+        cat_summary = {"error": repr(e)}
+    return {
+        "ok": True,
+        "tool": "stig_report",
+        "catalogue_summary": cat_summary,
+        "findings": findings if isinstance(findings, (dict, list)) else {"raw": findings},
+    }
+
+
+def tool_run_fleet_scan(args: Dict[str, Any]) -> Dict[str, Any]:
+    """run_fleet_scan() -> MUTATING + heavy.
+
+    1. Fleet-wide Wazuh agent restart (every reachable agent re-runs its
+       syscheck/FIM scan and the vulnerability detector re-runs).
+    2. Compliance evidence collection for every known tenant for today.
+    3. Fleet-wide compliance score recompute.
+
+    Gated behind SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 on the C2 manager.
+    """
+    c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    steps: List[Dict[str, Any]] = []
+    day = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).strftime("%Y-%m-%d")
+
+    # 1. fleet-wide agent restart (bulk: all reachable)
+    code, body = _http_post(f"{c2}/tools/restart_fleet", {}, timeout=20.0)
+    steps.append({"step": "fleet agent restart", "code": code,
+                  "body": body if isinstance(body, dict) else {"raw": str(body)}})
+    if code != 200:
+        return {"ok": False, "tool": "run_fleet_scan",
+                "error": f"fleet restart failed: {body!r}"}
+
+    # 2. compliance evidence harvest for every known tenant
+    ev_summary = {}
+    try:
+        sys.path.insert(0, os.path.join(soc_dir, "services"))
+        from soc_evidence import tool_collect_evidence, tool_evidence_summary
+        from soc_routing import get_config
+        for tid in get_config().known_tenants():
+            try:
+                ev = tool_collect_evidence({"tenant_id": tid})
+                ev_summary = tool_evidence_summary({"tenant_id": tid})
+                steps.append({"step": f"evidence {tid}", "ok": True,
+                              "summary": ev_summary})
+            except Exception as e:
+                steps.append({"step": f"evidence {tid}", "ok": False,
+                              "error": repr(e)})
+    except Exception as e:
+        steps.append({"step": "evidence", "ok": False, "error": repr(e)})
+
+    # 3. fleet-wide score recompute
+    scores = {}
+    try:
+        sys.path.insert(0, os.path.join(soc_dir, "services"))
+        from soc_score import tool_score_all_tenants
+        scores = tool_score_all_tenants({})
+    except Exception as e:
+        steps.append({"step": "scores", "ok": False, "error": repr(e)})
+
+    return {
+        "ok": True,
+        "tool": "run_fleet_scan",
+        "steps": steps,
+        "scores": scores,
+        "ts": __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).isoformat(),
+    }
 
 
 def tool_fleet_status(args: Dict[str, Any]) -> Dict[str, Any]:
