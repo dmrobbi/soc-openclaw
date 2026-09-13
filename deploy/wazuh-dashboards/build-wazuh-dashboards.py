@@ -226,6 +226,134 @@ def f_alerts(name):
 # Dashboard definitions
 # ---------------------------------------------------------------------------
 
+def _es_req(method, path):
+    import sys as _sys
+    _sys.path.insert(0, "/home/wez/.openclaw/soc")
+    import indexer as _idx
+    return _idx.req(method, path)
+
+
+def make_index_pattern(index_glob, title, time_field):
+    """Build an index-pattern saved object from the live mapping (needed
+    for indices the Wazuh plugin does not auto-create, e.g. vulnerability
+    states)."""
+    import urllib.request  # noqa: F401  (import path context only)
+    merged = {}
+    try:
+        m = _es_req('GET', f'/{index_glob}/_mapping')
+        for idxn, mspec in m.items():
+            props = (mspec.get('mappings') or {}).get('properties') or {}
+            for k, v in props.items():
+                merged.setdefault(k, v)
+    except Exception:
+        pass
+    fields = []
+    _flatten_fields(merged, '', fields)
+    return {
+        "_id": "index-pattern:" + title,
+        "_source": {
+            "type": "index-pattern",
+            "index-pattern": {"id": title, "title": title,
+                              "timeFieldName": time_field,
+                              "fields": json.dumps(fields)},
+            "references": [],
+            "migrationVersion": {"index-pattern": "7.6.0"},
+            "updated_at": NOW, "version": "WzE=",
+        },
+    }
+
+
+TYPE_MAP = {'text': 'string', 'keyword': 'string', 'long': 'number',
+            'integer': 'number', 'short': 'number', 'byte': 'number',
+            'double': 'number', 'float': 'number', 'half_float': 'number',
+            'scaled_float': 'number', 'date': 'date', 'boolean': 'boolean',
+            'ip': 'ip', 'geo_point': 'geo_point', 'conflict': 'conflict'}
+
+
+def _flatten_fields(props, prefix, out):
+    for name, spec in props.items():
+        path = prefix + name
+        t = spec.get('type')
+        if t == 'object' or (t is None and 'properties' in spec):
+            _flatten_fields(spec.get('properties', {}), path + '.', out)
+        elif t in TYPE_MAP:
+            agg = t in ('keyword', 'date', 'long', 'integer', 'double',
+                        'float', 'boolean', 'ip', 'geo_point')
+            out.append({"name": path, "type": TYPE_MAP[t], "count": 0,
+                        "scripted": False, "searchable": True,
+                        "aggregatable": agg, "readFromDocValues": agg})
+            for sub, sspec in (spec.get('fields') or {}).items():
+                st = sspec.get('type')
+                if st in TYPE_MAP:
+                    sagg = st in ('keyword', 'date', 'long', 'integer',
+                                  'double', 'float', 'boolean', 'ip')
+                    out.append({"name": path + '.' + sub,
+                                "type": TYPE_MAP[st], "count": 0,
+                                "scripted": False, "searchable": True,
+                                "aggregatable": sagg,
+                                "readFromDocValues": sagg})
+
+
+def vis_tagcloud(id_, title, index, field, size=25, filters=None):
+    vs = {"type": "tagcloud", "aggs": [
+        agg_metric(),
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {"field": field, "size": size, "orderBy": "1",
+                    "order": "desc"}}],
+        "params": {"scale": "linear", "orientation": "single",
+                   "minFontSize": 12, "maxFontSize": 60,
+                   "showLabel": False, "excludeTerms": "",
+                   "excludePattern": ""}}
+    return vis(id_, title, index, vs, filters)
+
+
+def vis_gauge(id_, title, index, filters=None, color="#E7664C"):
+    vs = {"type": "gauge", "aggs": [agg_metric()], "params": {
+        "addTooltip": True, "addLegend": False, "type": "gauge",
+        "gauge": {"verticalSplit": False, "autoColor": False,
+                  "colorRange": ["#68BC00", "#D68F00", "#E7664C"],
+                  "colorSchema": "Reds", "colorsNumber": 3,
+                  "gaugeColorMode": "labels", "gaugeStyle": "Full",
+                  "gaugeType": "Circle", "innerSpace": 8,
+                  "extendRange": True, "percentage": False,
+                  "rangeMax": 1000, "rangeMin": 0, "style": {
+                      "bgColor": True, "bgFill": 0.2, "borderBarColor": False,
+                      "borderColor": "#666", "borderWidth": 1.2,
+                      "fontSize": 60, "gaugeWidth": 10, "labelColor": False,
+                      "subText": "", "type": "meter"}}}}
+    return vis(id_, title, index, vs, filters)
+
+
+def vis_avg_bar(id_, title, index, value_field, bucket_field, size=10,
+                filters=None):
+    vs = {"type": "horizontal_bar", "aggs": [
+        {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
+         "params": {"field": value_field}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {"field": bucket_field, "size": size, "orderBy": "1",
+                    "order": "desc"}}],
+        "params": {
+            "type": "horizontal_bar",
+            "grid": {"categoryLines": False, "valueAxis": ""},
+            "categoryAxes": [{
+                "id": "ValueAxis-1", "type": "category", "position": "left",
+                "scale": {"type": "linear"},
+                "labels": {"show": True, "truncate": 64},
+                "title": {"text": bucket_field}}],
+            "valueAxes": [{
+                "id": "ValueAxis-2", "type": "value", "position": "bottom",
+                "scale": {"type": "linear", "mode": "normal"},
+                "labels": {"show": True}, "title": {"text": "Avg " + value_field}}],
+            "seriesParams": [{"show": True, "mode": "normal",
+                              "type": "histogram",
+                              "data": {"id": "1", "label": "Avg"},
+                              "valueAxis": "ValueAxis-2"}],
+            "addTooltip": True, "addLegend": False, "legendPosition": "right",
+            "times": [], "addTimeMarker": False, "labels": {},
+            "thresholdLine": {"show": False}}}
+    return vis(id_, title, index, vs, filters)
+
+
 def build_objects():
     objs = []
 
@@ -256,7 +384,7 @@ def build_objects():
                         ALERTS, "area", split_field=f_alerts("agent.name"), size=10))
     o.append(vis_pie("vis-vol-by-agent", "Alerts by agent", ALERTS,
                      f_alerts("agent.name"), size=10))
-    o.append(vis_table("vis-vol-by-agent", "Top agents by count", ALERTS,
+    o.append(vis_table("vis-vol-agent-table", "Top agents by count", ALERTS,
                        [f_alerts("agent.name"), f_alerts("agent.id")], size=10))
     o.append(vis_table("vis-vol-by-location", "Top sources (location)",
                        ALERTS, [f_alerts("location")], size=10))
@@ -268,7 +396,7 @@ def build_objects():
          ("vis-vol-by-agent", "By agent", 12, 0, 6, 5),
          ("vis-vol-total", "Total", 18, 0, 6, 2),
          ("vis-vol-by-location", "Top sources", 18, 2, 6, 3),
-         ("vis-vol-by-agent", "Top agents", 0, 5, 24, 5)],
+         ("vis-vol-agent-table", "Top agents", 0, 5, 24, 5)],
         []))
     # fix: dashboard 2 needs refs for its vis (panels reference them)
     # (refs are built from panels automatically; the extra vis_refs arg stays empty)
@@ -364,6 +492,150 @@ def build_objects():
          ("vis-net-top-src", "Top source IPs", 16, 0, 8, 4),
          ("vis-net-by-agent", "By agent + user", 0, 4, 24, 10)],
         []))
+
+    # ---- 7. Threat Tactics (MITRE) ----------------------------------------
+    mitre_q = {"meta": {"index": ALERTS},
+               "query": {"exists": {"field": "rule.mitre.id"}}}
+    o = []
+    o.append(vis_metric("vis-mitre-mapped", "Alerts with MITRE mapping",
+                        ALERTS, filters=[mitre_q]))
+    o.append(vis_pie("vis-mitre-tactics", "Alerts by MITRE tactic", ALERTS,
+                     "rule.mitre.tactic.keyword", size=12,
+                     filters=[mitre_q]))
+    o.append(vis_tagcloud("vis-mitre-techniques", "MITRE techniques (word cloud)",
+                          ALERTS, "rule.mitre.technique.keyword", size=25,
+                          filters=[mitre_q]))
+    o.append(vis_table("vis-mitre-top", "Top techniques", ALERTS,
+                       ["rule.mitre.technique.keyword",
+                        "rule.mitre.tactic.keyword",
+                        "rule.mitre.id.keyword"], size=10,
+                       filters=[mitre_q]))
+    objs.extend(o)
+    objs.append(dashboard(
+        "dash-soc-mitre", "SOC \u00b7 Threat Tactics (MITRE)",
+        "Alerts mapped to MITRE ATT&CK: tactics distribution, technique word cloud, top techniques. Source: wazuh-alerts-*.",
+        [("vis-mitre-mapped", "MITRE-mapped alerts", 0, 0, 4, 4),
+         ("vis-mitre-tactics", "By tactic", 4, 0, 8, 4),
+         ("vis-mitre-techniques", "Techniques", 12, 0, 12, 4),
+         ("vis-mitre-top", "Top techniques", 0, 4, 24, 10)],
+        []))
+
+    # ---- 8. Geography of Sources ------------------------------------------
+    geo_q = {"meta": {"index": ALERTS},
+             "query": {"exists": {"field": "GeoLocation.location"}}}
+    o = []
+    o.append(vis_metric("vis-geo-events", "Geo-located events", ALERTS,
+                        filters=[geo_q]))
+    o.append(vis_series("vis-geo-over-time", "Geo-located events over time",
+                        ALERTS, "area", filters=[geo_q]))
+    o.append(vis_pie("vis-geo-countries", "By country", ALERTS,
+                     "GeoLocation.country_name.keyword", size=12,
+                     filters=[geo_q]))
+    o.append(vis_tagcloud("vis-geo-cities", "Cities (word cloud)", ALERTS,
+                          "GeoLocation.city_name.keyword", size=30,
+                          filters=[geo_q]))
+    o.append(vis_table("vis-geo-detail", "Country / city / region", ALERTS,
+                       ["GeoLocation.country_name.keyword",
+                        "GeoLocation.city_name.keyword",
+                        "GeoLocation.region_name.keyword"], size=10,
+                       filters=[geo_q]))
+    objs.extend(o)
+    objs.append(dashboard(
+        "dash-soc-geo", "SOC \u00b7 Geography of Sources",
+        "Where your events come from: country/city/region breakdowns of geo-located alerts. Source: wazuh-alerts-* (GeoLocation).",
+        [("vis-geo-events", "Geo events", 0, 0, 4, 4),
+         ("vis-geo-over-time", "Over time", 4, 0, 12, 4),
+         ("vis-geo-countries", "By country", 16, 0, 8, 4),
+         ("vis-geo-cities", "Cities", 0, 4, 10, 8),
+         ("vis-geo-detail", "Geo detail", 10, 4, 14, 8)],
+        []))
+
+    # ---- 9. System Integrity (FIM) ----------------------------------------
+    fim_q = {"meta": {"index": ALERTS},
+             "query": {"exists": {"field": "syscheck.event"}}}
+    o = []
+    o.append(vis_metric("vis-fim-events", "FIM events", ALERTS,
+                        filters=[fim_q]))
+    o.append(vis_pie("vis-fim-event-types", "By event type", ALERTS,
+                     "syscheck.event.keyword", size=6, filters=[fim_q]))
+    o.append(vis_series("vis-fim-over-time", "FIM events over time",
+                        ALERTS, "area", split_field="syscheck.event.keyword",
+                        size=4, filters=[fim_q]))
+    o.append(vis_pie("vis-fim-by-agent", "FIM by agent", ALERTS,
+                     f_alerts("agent.name"), size=10, filters=[fim_q]))
+    o.append(vis_table("vis-fim-paths", "Most-touched paths", ALERTS,
+                       ["syscheck.path.keyword", "syscheck.event.keyword",
+                        f_alerts("agent.name")], size=15, filters=[fim_q]))
+    objs.extend(o)
+    objs.append(dashboard(
+        "dash-soc-fim", "SOC \u00b7 System Integrity (FIM)",
+        "File integrity monitoring: added/modified/deleted files across the fleet. Source: wazuh-alerts-* (syscheck).",
+        [("vis-fim-events", "FIM events", 0, 0, 4, 4),
+         ("vis-fim-event-types", "By event type", 4, 0, 6, 4),
+         ("vis-fim-by-agent", "By agent", 10, 0, 7, 4),
+         ("vis-fim-over-time", "FIM over time", 17, 0, 7, 4),
+         ("vis-fim-paths", "Most-touched paths", 0, 4, 24, 10)],
+        []))
+
+    # ---- 10. Vulnerability Findings ---------------------------------------
+    VULN = "wazuh-states-vulnerabilities-*"
+    o = []
+    o.append(vis_metric("vis-vuln-total", "Vulnerabilities detected", VULN))
+    o.append(vis_pie("vis-vuln-severity", "By severity", VULN,
+                     "vulnerability.severity", size=10))
+    o.append(vis_gauge("vis-vuln-critical", "Critical count", VULN,
+                       filters=[{"meta": {"index": VULN},
+                                 "query": {"match_phrase":
+                                           {"vulnerability.severity":
+                                            "Critical"}}}]))
+    o.append(vis_avg_bar("vis-vuln-score", "Avg CVSS by severity", VULN,
+                         "vulnerability.score.base", "vulnerability.severity",
+                         size=10))
+    o.append(vis_topline("vis-vuln-packages", "Most-affected packages", VULN,
+                         "package.name", size=5))
+    o.append(vis_table("vis-vuln-top-cves", "Top CVEs", VULN,
+                       ["vulnerability.id", "vulnerability.severity",
+                        "package.name", "agent.name"], size=15))
+    o.append(vis_table("vis-vuln-by-agent", "By agent", VULN,
+                       ["agent.name"], size=10))
+    objs.extend(o)
+    objs.append(dashboard(
+        "dash-soc-vulns", "SOC \u00b7 Vulnerability Findings",
+        "Vulnerability detector state: severity mix, CVSS averages, most-affected packages and agents, top CVEs. Source: wazuh-states-vulnerabilities-*.",
+        [("vis-vuln-total", "Vulnerabilities", 0, 0, 4, 4),
+         ("vis-vuln-critical", "Critical", 4, 0, 4, 4),
+         ("vis-vuln-severity", "By severity", 8, 0, 8, 4),
+         ("vis-vuln-score", "Avg CVSS", 16, 0, 8, 4),
+         ("vis-vuln-packages", "Most-affected packages", 0, 4, 12, 4),
+         ("vis-vuln-by-agent", "By agent", 12, 4, 12, 4),
+         ("vis-vuln-top-cves", "Top CVEs", 0, 8, 24, 10)],
+        []))
+
+    # ---- 11. Severity Mix & Trends ----------------------------------------
+    o = []
+    o.append(vis_series("vis-sev-over-time", "Alerts over time by severity",
+                        ALERTS, "bar", split_field="rule.level", size=16))
+    o.append(vis_pie("vis-sev-mix", "Severity mix", ALERTS, "rule.level",
+                     size=16))
+    o.append(vis_avg_bar("vis-sev-avg", "Avg severity by agent", ALERTS,
+                         "rule.level", f_alerts("agent.name"), size=10))
+    o.append(vis_metric("vis-sev-high", "High-severity (>=10) alerts", ALERTS,
+                        filters=[{"meta": {"index": ALERTS},
+                                  "query": {"range":
+                                            {"rule.level": {"gte": 10}}}}]))
+    objs.extend(o)
+    objs.append(dashboard(
+        "dash-soc-severity", "SOC \u00b7 Severity Mix & Trends",
+        "How severe is the fleet's traffic: stacked severity trends, mix, average per agent, high-severity count. Source: wazuh-alerts-*.",
+        [("vis-sev-over-time", "Trend by severity", 0, 0, 12, 5),
+         ("vis-sev-mix", "Severity mix", 12, 0, 6, 5),
+         ("vis-sev-high", "High (>=10)", 18, 0, 6, 5),
+         ("vis-sev-avg", "Avg severity per agent", 0, 5, 12, 6),
+         ("vis-vol-agent-table", "Top agents (context)", 12, 5, 12, 6)],
+        []))
+
+    # vulnerability states index pattern (plugin does not auto-create it)
+    objs.append(make_index_pattern(VULN, VULN, "detected_at"))
 
     return objs
 
