@@ -180,10 +180,9 @@
           el("td", null, el("a", {
             href: "/stig/host/" + encodeURIComponent(r.name || r.id),
             "data-link": "",
-            title: "STIG findings for " + (r.name || r.id),
-          }, badge((stigByHost[r.name] || 0) > 0
-            ? String(stigByHost[r.name]) + " warn"
-            : "0 dim"))),
+            title: "STIG findings for " + (r.name || r.id) + " (30d)",
+          }, el("span", { class: "badge " + ((stigByHost[r.name] || 0) > 0 ? "warn" : "dim") },
+             String(stigByHost[r.name] || 0)))),
         );
       })),
     );
@@ -1117,6 +1116,123 @@
             el("div", { class: "alert bad" }, esc(String(e.message || e)))];
   }
 
+  // ---- task pane (vCenter-style) --------------------------------------
+  function taskStatusCell(r) {
+    const cls = r.status === "running" ? "warn" : r.status === "done"
+      ? "good" : r.status === "timeout" ? "warn" : "bad";
+    return el("span", { class: "badge " + cls }, r.status || "?");
+  }
+  function tasksTable(rows) {
+    if (!rows.length) return el("p", { class: "empty" },
+      "No tasks recorded yet — run a scan from a host page and it appears here.");
+    return el("table", null,
+      el("thead", null, el("tr", null,
+        el("th", null, "task"), el("th", null, "target"),
+        el("th", null, "status"), el("th", null, "started"),
+        el("th", null, "ended"), el("th", null, "report"),
+        el("th", null, ""))),
+      el("tbody", null, ...rows.map(r => {
+        const d = r.details || {};
+        return el("tr", null,
+          el("td", null, badge((r.kind || "?") === "compliance_scan"
+            ? "medium" : (r.kind || "?") === "stig_scan" ? "info" : "dim"),
+            " ", el("code", null, r.kind || "?")),
+          el("td", null, el("code", null, r.target || "-")),
+          el("td", null, taskStatusCell(r)),
+          el("td", null, el("code", null, (r.ts || "").substring(0, 19).replace("T", " "))),
+          el("td", null, el("code", null, (r.ended || "").substring(0, 19).replace("T", " ") || "-")),
+          el("td", null, d.report_url
+            ? el("a", { href: d.report_url, target: "_blank" }, "report")
+            : el("span", { class: "muted" }, "—")),
+          el("td", null, el("a", { href: "/tasks/" + encodeURIComponent(r.id),
+            "data-link": "" }, "details")));
+      })),
+    );
+  }
+  async function pageTasks() {
+    let data;
+    try { data = await api("/tools/tasks_list", "POST", { limit: 200 }); }
+    catch (e) { return errorView(e); }
+    const rows = data.tasks || [];
+    const running = rows.filter(r => r.status === "running").length;
+    return [
+      el("h1", null, "Tasks"),
+      el("p", { class: "muted" },
+        "Every task the SOC system has run: compliance scans, agent-restart " +
+        "triggers, OpenSCAP scans. Newest first — click a task for the " +
+        "drill-down (steps, evidence, report)." +
+        (running ? " " + running + " running." : "")),
+      el("div", { class: "section" }, tasksTable(rows)),
+      el("p", { class: "muted" }, "Auto-refreshes every 30s."),
+    ];
+  }
+  async function pageTaskDetail(id) {
+    let data;
+    try { data = await api("/tools/task_get", "POST", { id }); }
+    catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "task_get failed"));
+    const t = data.task || {};
+    const d = (t.details && typeof t.details === "object") ? t.details : {};
+    return [
+      el("h1", null, "Task: " + (t.kind || "?") + " · " + (t.target || "?")),
+      el("div", { class: "cards" },
+        card("Status", t.status || "?",
+             t.status === "done" ? "good" : (t.status === "running" ? "warn" : "bad")),
+        card("Started", fmtTime(t.ts) || "-", ""),
+        card("Ended", fmtTime(t.ended) || "-", ""),
+        t.report_available ? card("Report", "available", "info") : null,
+      ),
+      el("div", { class: "section" },
+        el("h2", null, "Details"),
+        el("pre", null, esc(JSON.stringify(d, null, 2))),
+      ),
+      t.history && t.history.length > 1
+        ? el("div", { class: "section" },
+            el("h2", null, "History"),
+            el("ul", { class: "list" }, ...t.history.map(h => el("li", null,
+              el("code", null, (h.ts || "").substring(0, 19)), " — ",
+              badge(h.status || "?")))))
+        : null,
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/tasks", "data-link": "" }, "← all tasks"),
+        t.report_available
+          ? el("a", { class: "btn", href: d.report_url || "/tasks", target: "_blank" },
+              "Open scan report")
+          : null,
+      ),
+    ];
+  }
+  async function updateTaskbar() {
+    const bar = document.getElementById("taskbar");
+    if (!bar) return;
+    try {
+      const data = await api("/tools/tasks_list", "POST", { limit: 30 });
+      const rows = (data.tasks || []).slice(0, 4);
+      bar.textContent = "";
+      const mk = (t) => {
+        const a = document.createElement("a");
+        a.href = "/tasks/" + encodeURIComponent(t.id);
+        a.setAttribute("data-link", "");
+        a.className = "tb-item " + (t.status === "running" ? "run"
+          : t.status === "done" ? "ok" : "fail");
+        a.textContent = (t.status === "running" ? "🔴 "
+          : t.status === "done" ? "✓ " : "✗ ")
+          + (t.kind || "task") + ": " + (t.target || "");
+        return a;
+      };
+      const running = rows.find(r => r.status === "running");
+      if (running) bar.appendChild(mk(running));
+      rows.filter(r => r.status !== "running").slice(0, 3)
+        .forEach(t => bar.appendChild(mk(t)));
+      const all = document.createElement("a");
+      all.href = "/tasks";
+      all.setAttribute("data-link", "");
+      all.className = "tb-all";
+      all.textContent = "all tasks →";
+      bar.appendChild(all);
+    } catch (e) { /* taskbar is best-effort */ }
+  }
+
   // ---- router ---------------------------------------------------------
   async function render() {
     const path = location.pathname.replace(/\/+$/, "") || "/";
@@ -1135,6 +1251,11 @@
       nodes = await pageScores();
     } else if (path === "/stig") {
       nodes = await pageStig();
+    } else if (path === "/tasks") {
+      nodes = await pageTasks();
+    } else if (path.startsWith("/tasks/")) {
+      const tid = decodeURIComponent(path.replace(/^\/tasks\//, "").replace(/\/+$/, ""));
+      if (tid) nodes = await pageTaskDetail(tid);
     } else if (path.startsWith("/stig/host/")) {
       const host = decodeURIComponent(path.replace(/^\/stig\/host\//, "").replace(/\/+$/, ""));
       if (host) nodes = await pageStigHost(host);
@@ -1160,7 +1281,8 @@
                            el("p", null, el("a", { href: "/" }, "← back to overview"))];
     }
     clear(root);
-    nodes.forEach(n => root.appendChild(n));
+    nodes.forEach(n => { if (n) root.appendChild(n); });
+    updateTaskbar();
     // Highlight current nav
     document.querySelectorAll(".nav a").forEach(a => {
       const href = a.getAttribute("href");
@@ -1210,4 +1332,6 @@
   if (location.pathname.replace(/\/+$/, "") === "/fleet") scheduleFleetRefresh();
   updateStatus();
   setInterval(updateStatus, 15000);
+  updateTaskbar();
+  setInterval(updateTaskbar, 30000);
 })();

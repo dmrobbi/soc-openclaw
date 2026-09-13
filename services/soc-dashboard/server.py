@@ -92,6 +92,7 @@ DASHBOARD_TOOLS = (
     "stig_host_view",
     "fleet_host_view", "run_scan",
     "run_host_compliance_scan",
+    "tasks_list", "task_get",
     "compliance_report", "stig_report", "run_fleet_scan",
 )
 
@@ -740,6 +741,109 @@ def tool_run_host_compliance_scan(args: Dict[str, Any]) -> Dict[str, Any]:
             "tenants_scanned": tenants}
 
 
+def _tasklog():
+    """Lazy services/soc_tasklog module (services/ on sys.path)."""
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if soc_dir not in sys.path:
+        sys.path.insert(0, soc_dir)
+    import soc_tasklog
+    return soc_tasklog
+
+
+# Tasks recorded into the task log (vCenter-style pane): every
+# mutating/compliance trigger gets a running + done/failed row.
+_TASK_LOGGED_TOOLS = {
+    "run_scan": "wazuh_scan",
+    "run_host_compliance_scan": "compliance_scan",
+    "run_fleet_scan": "compliance_scan",
+}
+
+
+def _scan_dir_rows() -> List[Dict[str, Any]]:
+    """Synthesize task rows for historic OpenSCAP scans on disk."""
+    import hashlib
+    base = os.environ.get(
+        "SOC_SCAN_RESULTS_DIR",
+        os.path.expanduser("~/.openclaw/soc/scans"))
+    out: List[Dict[str, Any]] = []
+    if not os.path.isdir(base):
+        return out
+    for day in sorted(os.listdir(base)):
+        daydir = os.path.join(base, day)
+        if not os.path.isdir(daydir) or not re.match(
+                r"^\d{4}-\d{2}-\d{2}$", day):
+            continue
+        for res in sorted(os.listdir(daydir)):
+            if not res.startswith("results-") or not res.endswith(".xml"):
+                continue
+            host = res[len("results-"):-len(".xml")]
+            full = os.path.join(daydir, res)
+            try:
+                mtime = os.stat(full).st_mtime
+            except OSError:
+                continue
+            ts = __import__("datetime").datetime.fromtimestamp(
+                mtime, __import__("datetime").timezone.utc).isoformat()
+            report = os.path.join(daydir, f"report-{host}.html")
+            out.append({
+                "id": hashlib.sha1(
+                    f"{ts}|stig_scan|{host}".encode()).hexdigest()[:12],
+                "ts": ts, "kind": "stig_scan", "target": host,
+                "status": "done", "ended": ts,
+                "details": {
+                    "results_path": full,
+                    "report_url": f"/scans/{day}/report-{host}.html"
+                    if os.path.exists(report) else None,
+                },
+            })
+    return out
+
+
+def tool_tasks_list(args: Dict[str, Any]) -> Dict[str, Any]:
+    """tasks_list(limit=100) -> vCenter-style task history: every
+    recorded SOC task (compliance scans, agent-restart triggers)
+    newest-first, merged with historic OpenSCAP scans on disk."""
+    limit = min(int(args.get("limit") or 100), 500)
+    rows = list(_tasklog().load_tasks(limit * 2)) + _scan_dir_rows()
+    rows.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    # a "running" row older than 2h is almost certainly a dead process
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    out = []
+    for r in rows[:limit]:
+        if r.get("status") == "running":
+            try:
+                started = _dt.datetime.fromisoformat(
+                    (r.get("ts") or "").replace("Z", "+00:00"))
+                if now - started > _dt.timedelta(hours=2):
+                    r = dict(r, status="timeout")
+            except Exception:
+                pass
+        out.append(r)
+    return {"ok": True, "tool": "tasks_list", "tasks": out,
+            "total": len(rows)}
+
+
+def tool_task_get(args: Dict[str, Any]) -> Dict[str, Any]:
+    """task_get(id) -> one task row + its history (drill-down)."""
+    tid = str(args.get("id") or "").strip()
+    if not tid:
+        raise ValueError("id is required")
+    row = _tasklog().get_task(tid)
+    if row is None:
+        for r in _scan_dir_rows():
+            if r.get("id") == tid:
+                row = dict(r, history=[r])
+                break
+    if row is None:
+        return {"ok": False, "tool": "task_get",
+                "error": f"unknown task id {tid!r}"}
+    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+    rp = details.get("report_path") or details.get("results_path")
+    return {"ok": True, "tool": "task_get",
+            "task": dict(row, report_available=bool(rp and os.path.exists(rp)))}
+
+
 def tool_fleet_status(args: Dict[str, Any]) -> Dict[str, Any]:
     """fleet_status() -> one row per Wazuh agent, plus summary counts.
 
@@ -943,6 +1047,38 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
+        # /tasks page (vCenter-style task history) + drill-down
+        if path == "/tasks" or path == "/tasks/":
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/tasks/[A-Za-z0-9_-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        # OpenSCAP scan artifacts: /scans/<day>/report-<host>.html
+        m_scans = re.match(
+            r"^/scans/(\d{4}-\d{2}-\d{2})/(report-[A-Za-z0-9_.-]+\.html)$",
+            path)
+        if m_scans:
+            base = os.environ.get(
+                "SOC_SCAN_RESULTS_DIR",
+                os.path.expanduser("~/.openclaw/soc/scans"))
+            fpath = os.path.join(base, m_scans.group(1), m_scans.group(2))
+            if (os.path.isfile(fpath) and os.path.realpath(fpath).startswith(
+                    os.path.realpath(base) + os.sep)):
+                with open(fpath, "rb") as fh:
+                    body = fh.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                self._log("GET", 200, (time.monotonic() - t0) * 1000)
+                return
+            self._json(404, {"ok": False, "error": "not found"})
+            self._log("GET", 404, (time.monotonic() - t0) * 1000)
+            return
         # /tenants, /agents, /tickets SPA landing pages (drilldowns
         # at /<kind>/<id> are matched by the regex below).
         if path in ("/tenants", "/tenants/",
@@ -992,6 +1128,8 @@ class _Handler(BaseHTTPRequestHandler):
             "fleet_host_view": tool_fleet_host_view,
             "run_scan": tool_run_scan_proxy,
             "run_host_compliance_scan": tool_run_host_compliance_scan,
+            "tasks_list": tool_tasks_list,
+            "task_get": tool_task_get,
             "compliance_report": tool_compliance_report,
             "stig_report": tool_stig_report,
             "run_fleet_scan": tool_run_fleet_scan,
@@ -1002,19 +1140,72 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": f"unknown tool: {tool}"})
             self._log("POST", 404, (time.monotonic() - t0) * 1000)
             return
+        started_ts = __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).isoformat()
+        logged_kind = _TASK_LOGGED_TOOLS.get(tool)
+        if logged_kind:
+            try:
+                _tasklog().record_task(
+                    logged_kind,
+                    str((args or {}).get("agent_id")
+                        or (args or {}).get("host") or "-"),
+                    "running", started_ts)
+            except Exception:
+                pass
         try:
             result = impl(args)
         except ValueError as e:
+            try:
+                if logged_kind:
+                    _tasklog().record_task(
+                        logged_kind,
+                        str((args or {}).get("agent_id")
+                            or (args or {}).get("host") or "-"),
+                        "failed", started_ts,
+                        ended=__import__("datetime").datetime.now(
+                            __import__("datetime").timezone.utc).isoformat(),
+                        details={"tool": tool, "error": str(e)})
+            except Exception:
+                pass
             self._json(400, {"ok": False, "error": str(e), "tool": tool})
             self._log("POST", 400, (time.monotonic() - t0) * 1000)
             return
         except Exception as e:
             sys.stderr.write(
                 f"[soc-dashboard] unhandled: {e!r}\n{traceback.format_exc()}\n")
+            try:
+                if logged_kind:
+                    _tasklog().record_task(
+                        logged_kind,
+                        str((args or {}).get("agent_id")
+                            or (args or {}).get("host") or "-"),
+                        "failed", started_ts,
+                        ended=__import__("datetime").datetime.now(
+                            __import__("datetime").timezone.utc).isoformat(),
+                        details={"tool": tool, "error": repr(e)[:300]})
+            except Exception:
+                pass
             self._json(500, {"ok": False, "error": f"internal: {e!r}",
                              "tool": tool})
             self._log("POST", 500, (time.monotonic() - t0) * 1000)
             return
+        if logged_kind and isinstance(result, dict):
+            try:
+                _tasklog().record_task(
+                    logged_kind,
+                    str((args or {}).get("agent_id")
+                        or (args or {}).get("host") or "-"),
+                    "done" if result.get("ok") else "failed",
+                    started_ts,
+                    ended=__import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc).isoformat(),
+                    details={"tool": tool,
+                             "fleet_score": (result.get("scores") or {}).get(
+                                 "fleet_score")
+                             if isinstance(result.get("scores"), dict)
+                             else None})
+            except Exception:
+                pass
         self._json(200, result)
         self._log("POST", 200, (time.monotonic() - t0) * 1000)
 
