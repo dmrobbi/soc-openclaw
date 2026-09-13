@@ -151,6 +151,7 @@
         el("th", null, "keepalive"),
         el("th", null, "staleness"),
         el("th", null, "STIG (30d)"),
+        el("th", null, "logs"),
       )),
       el("tbody", null, ...sorted.map(r => {
         const isMgr = r.last_keepalive && r.last_keepalive.startsWith("9999");
@@ -183,9 +184,69 @@
             title: "STIG findings for " + (r.name || r.id) + " (30d)",
           }, el("span", { class: "badge " + ((stigByHost[r.name] || 0) > 0 ? "warn" : "dim") },
              String(stigByHost[r.name] || 0)))),
+          el("td", null, isMgr ? el("span", { class: "muted" }, "-") : el("a", {
+            href: "/logs/" + encodeURIComponent(r.name || r.id),
+            "data-link": "",
+            title: "Recent Wazuh alerts for " + (r.name || r.id),
+          }, "Logs")),
         );
       })),
     );
+  }
+
+  // Wazuh dashboard deep link: discover filtered to one agent.
+  // The dashboard container publishes https on :5601 (LAN).
+  const WZ_DASH = "https://192.168.1.106:5601";
+  function wzDiscoverUrl(agent) {
+    const state = "(filters:!((query:(match:(('data.agent.name.keyword':'" +
+      agent + "'))))))";
+    return WZ_DASH + "/app/discover#/?_a=" + encodeURIComponent(state);
+  }
+  let agentLogsHours = 24;
+  async function pageAgentLogs(name) {
+    let data;
+    try {
+      data = await api("/tools/agent_logs", "POST",
+                       { agent: name, hours: agentLogsHours, size: 200 });
+    } catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "agent_logs failed"));
+    const hits = data.hits || [];
+    const sel = el("select", {
+      onchange: (ev) => { agentLogsHours = Number(ev.target.value); render(); },
+    }, ...[["6", "Last 6 hours"], ["24", "Last 24 hours"],
+           ["72", "Last 3 days"], ["168", "Last 7 days"]].map(([v, label]) =>
+      el("option", { value: v,
+                     ...(String(agentLogsHours) === v ? { selected: "selected" } : {}) },
+         label)));
+    const lvBadge = (lv) => badge(String(lv ?? "?") + " " +
+      ((lv ?? 0) >= 10 ? "bad" : (lv ?? 0) >= 7 ? "warn" : "dim"));
+    return [
+      el("h1", null, "Logs: " + name),
+      el("div", { class: "btn-row" },
+        sel,
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+        el("a", { class: "btn", target: "_blank", rel: "noopener",
+                  href: wzDiscoverUrl(name) }, "Open in Wazuh \u2197"),
+        el("a", { class: "btn", href: "/fleet", "data-link": "" }, "\u2190 Fleet"),
+      ),
+      el("p", { class: "muted" },
+        el("code", null, String(hits.length)),
+        " alert(s) in the selected window, newest first. Source: C1 ",
+        el("code", null, "search_alerts"), " (wazuh-alerts-*)."),
+      hits.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "time"), el("th", null, "level"), el("th", null, "rule"),
+          el("th", null, "description"), el("th", null, "src ip"),
+          el("th", null, "dst user"))),
+        el("tbody", null, ...hits.map(h => el("tr", null,
+          el("td", null, fmtTime(h.timestamp)),
+          el("td", null, lvBadge(h.level)),
+          el("td", null, el("code", null, String(h.rule_id || "-"))),
+          el("td", null, h.rule_desc || "-"),
+          el("td", null, el("code", null, h.srcip || "-")),
+          el("td", null, el("code", null, h.dstuser || "-")),
+        )))) : el("p", { class: "empty" }, "No alerts in this window."),
+    ];
   }
 
   async function pageFleetHost(agentId) {
@@ -198,6 +259,12 @@
     const stig = data.stig || {};
     const nodes = [
       el("h1", null, "Host: " + (a.name || agentId)),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/logs/" + encodeURIComponent(a.name || agentId),
+                  "data-link": "", title: "Recent Wazuh alerts for " + (a.name || agentId) }, "Logs"),
+        el("a", { class: "btn", target: "_blank", rel: "noopener",
+                  href: wzDiscoverUrl(a.name || agentId) }, "Open in Wazuh \u2197"),
+      ),
       el("div", { class: "cards" },
         card("Status", a.status || "?", a.status === "active" ? "good" : "bad"),
         card("IP", a.ip || "-", ""),
@@ -1259,6 +1326,9 @@
     } else if (path.startsWith("/stig/host/")) {
       const host = decodeURIComponent(path.replace(/^\/stig\/host\//, "").replace(/\/+$/, ""));
       if (host) nodes = await pageStigHost(host);
+    } else if (path.startsWith("/logs/")) {
+      const name = decodeURIComponent(path.replace(/^\/logs\//, "").replace(/\/+$/, ""));
+      if (name) nodes = await pageAgentLogs(name);
     } else if (path === "/agents") {
       nodes = await pageAgents();
     } else if (path === "/tickets") {
