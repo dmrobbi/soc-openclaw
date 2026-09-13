@@ -94,6 +94,7 @@ DASHBOARD_TOOLS = (
     "run_host_compliance_scan",
     "tasks_list", "task_get",
     "compliance_report", "stig_report", "run_fleet_scan",
+    "agent_logs",
 )
 
 
@@ -524,6 +525,33 @@ def tool_run_scan_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "tool": "run_scan",
                 "error": f"C2 manager returned {code}: {err}"}
     return body
+
+
+def tool_agent_logs(args: Dict[str, Any]) -> Dict[str, Any]:
+    """agent_logs(agent, hours=24, min_level=0, size=200) -> recent Wazuh
+    alerts for one agent. Proxies C1 soc-wazuh-mcp search_alerts (which
+    handles the agent.name.keyword match for tokenized names)."""
+    agent = (args or {}).get("agent")
+    if not agent:
+        raise ValueError("agent is required")
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    hours = max(1, min(int((args or {}).get("hours") or 24), 24 * 30))
+    payload = {
+        "agent": str(agent),
+        "time_range": f"{hours}h",
+        "min_level": max(0, int((args or {}).get("min_level") or 0)),
+        "size": max(1, min(int((args or {}).get("size") or 200), 500)),
+    }
+    code, body = _http_post(f"{c1}/tools/search_alerts", payload,
+                            timeout=20.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 search_alerts failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {
+        "ok": True, "tool": "agent_logs", "agent": str(agent),
+        "range": body.get("range"), "total": body.get("total"),
+        "hits": body.get("hits", []),
+    }
 
 
 def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1054,6 +1082,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
+        # /logs/<agent> — recent Wazuh alerts for one agent (C1 proxy)
+        if re.match(r"^/logs/[A-Za-z0-9_.-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
         # /tasks page (vCenter-style task history) + drill-down
         if path == "/tasks" or path == "/tasks/":
             self._serve_static("index.html")
@@ -1133,6 +1166,7 @@ class _Handler(BaseHTTPRequestHandler):
             "stig_findings": tool_stig_findings,
             "stig_host_view": tool_stig_host_view,
             "fleet_host_view": tool_fleet_host_view,
+            "agent_logs": tool_agent_logs,
             "run_scan": tool_run_scan_proxy,
             "run_host_compliance_scan": tool_run_host_compliance_scan,
             "tasks_list": tool_tasks_list,
