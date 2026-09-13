@@ -198,7 +198,7 @@
   // The dashboard container publishes https on :5601 (LAN).
   const WZ_DASH = "https://192.168.1.106:5601";
   function wzDiscoverUrl(agent) {
-    const state = "(filters:!((query:(match:(('data.agent.name.keyword':'" +
+    const state = "(filters:!((query:(match:(('agent.name.keyword':'" +
       agent + "'))))))";
     return WZ_DASH + "/app/discover#/?_a=" + encodeURIComponent(state);
   }
