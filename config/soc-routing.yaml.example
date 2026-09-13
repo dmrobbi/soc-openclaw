@@ -19,7 +19,7 @@
 # during an incident.
 #
 # This is the *default* tenant. The fleet has two tenants
-# today (bedimsecurity + stsgym). Add more by appending a
+# today (example-soc + example-soc-2). Add more by appending a
 # `tenants:` block below with a new key.
 
 # Default settings applied to every tenant that doesn't
@@ -52,13 +52,13 @@ defaults:
   # Recipients per channel. Substituted into templates below.
   recipients:
     email:
-      primary: soc@bedimsecurity.com
-      security_team: security@bedimsecurity.com
+      primary: soc@example.com
+      security_team: security@example.com
     page:
-      oncall_primary: wlrobbi@bedimsecurity.com
-      oncall_secondary: ops@bedimsecurity.com
+      oncall_primary: soc-operator@example.com
+      oncall_secondary: ops@example.com
     digest:
-      stakeholders: leadership@bedimsecurity.com
+      stakeholders: leadership@example.com
     log:
       audit_target: /var/log/soc/audit.jsonl
 
@@ -100,7 +100,7 @@ defaults:
 # Per-tenant overrides. Any field may be omitted; the
 # `defaults:` block fills in the rest.
 tenants:
-  bedimsecurity:
+  example-soc:
     display_name: "Example SOC (primary tenant)"
     auto_remediation_threshold: 0.85
     # SOC Phase 4 (2026-08-17): per-tenant pattern whitelist.
@@ -110,7 +110,7 @@ tenants:
     # AFTER the existing can_auto_remediate() check passes.
     allow_auto_remediate_patterns: []
     notification_routing:
-      # bedimsecurity is the prod tenant — we want every
+      # example-soc is the prod tenant — we want every
       # `page` to also email the security team so there's a
       # written record.
       page: [page, email]
@@ -120,17 +120,17 @@ tenants:
       auto_remediate: [page, email, log]
     recipients:
       email:
-        primary: soc@bedimsecurity.com
-        security_team: security@bedimsecurity.com
-        legal: legal@bedimsecurity.com
+        primary: soc@example.com
+        security_team: security@example.com
+        legal: legal@example.com
       page:
-        oncall_primary: wlrobbi@bedimsecurity.com
-        oncall_secondary: ops@bedimsecurity.com
+        oncall_primary: soc-operator@example.com
+        oncall_secondary: ops@example.com
     stig:
       applicability_tags: [AC, AU, IA, SC, SI, CM, CP, IR, MA, MP, PE, PL, PS, RA, SA, SC, SI, PM]
       baseline: high
 
-  stsgym:
+  example-soc-2:
     display_name: "example.com (sandbox / demo tenant)"
     auto_remediation_threshold: 0.95   # tighter; this is the demo
     notification_routing:
@@ -142,15 +142,15 @@ tenants:
       auto_remediate: [log, email]
     recipients:
       email:
-        primary: ops@stsgym.com
-        security_team: security@stsgym.com
+        primary: ops@example.com
+        security_team: security@example.com
       page:
         # never actually paged — only logged
-        oncall_primary: noc@stsgym.com
+        oncall_primary: noc@example.com
       digest:
-        stakeholders: leadership@stsgym.com
+        stakeholders: leadership@example.com
       log:
-        audit_target: /var/log/soc/audit.stsgym.jsonl
+        audit_target: /var/log/soc/audit.example-soc-2.jsonl
     quiet_hours:
       enabled: false   # 24/7 monitoring
     allowed_actions:
