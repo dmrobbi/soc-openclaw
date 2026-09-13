@@ -55,6 +55,26 @@ curl -sk -o /dev/null -w "%{http_code}\n" -u "wazuh-wui:<new>" \
 (There is also `/var/ossec/bin/rbac_control change-password`, but it is
 interactive-only.)
 
+## Dashboard ↔ manager API credentials
+
+The Wazuh dashboard's plugin uses its own stored manager API credentials
+in `/home/wez/wazuh-stack/config/wazuh_dashboard/wazuh.yml` (bind-mounted
+into the dashboard container). When the manager API password rotates,
+**that file must be updated too** — a stale password makes the plugin
+401 every five minutes and every Wazuh-native view (Overview, Agents,
+Events) silently empties while the SOC dashboard keeps working.
+
+- Verify creds: `POST https://127.0.0.1:55000/security/user/authenticate`
+  with the stored user/password (basic auth is accepted ONLY on this
+  endpoint; other endpoints need a Bearer token from it).
+- The file is a **single-file bind mount**: edit it **in place** (never
+  `os.replace`/rename a new file over it — the container keeps reading
+  the old inode), keep ownership/mode readable by the container uid
+  (uid 1000; host file `wez:wez` 664 works), then
+  `sudo docker restart wazuh-stack_wazuh.dashboard_1`.
+- Signs of the stale-credential failure mode: repeated
+  `cron-scheduler ... AxiosError 401` in the dashboard container logs.
+
 ## Systemd failure modes worth knowing
 
 | Result | Cause | Prevented by |
