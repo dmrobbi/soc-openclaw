@@ -291,7 +291,7 @@ def tool_list_agent_os(args: Dict[str, Any]) -> Dict[str, Any]:
         "sort": [{"timestamp": {"order": "desc"}}],
         "collapse": {"field": "id"},
         "_source": ["id", "name", "status", "os.platform", "os.name",
-                    "lastKeepAlive"],
+                    "os.version", "lastKeepAlive", "ip"],
     }
     res = _post_search(body, index="wazuh-monitoring-*")
     out = []
@@ -306,7 +306,9 @@ def tool_list_agent_os(args: Dict[str, Any]) -> Dict[str, Any]:
             "status": str(src.get("status") or ""),
             "os_platform": str(osinfo.get("platform") or ""),
             "os_name": str(osinfo.get("name") or ""),
+            "os_version": str(osinfo.get("version") or ""),
             "last_keepalive": str(src.get("lastKeepAlive") or ""),
+            "ip": str(src.get("ip") or ""),
         })
     return {"ok": True, "tool": "list_agent_os", "agents": out,
             "total": len(out)}
