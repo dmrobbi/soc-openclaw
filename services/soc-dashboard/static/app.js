@@ -84,6 +84,11 @@
                            { time_range: "30d", limit: 1 });
       stigByHost = (sq && sq.by_host) || {};
     } catch (e) { /* ignore */ }
+    let cveByHost = {};
+    try {
+      const cv = await api("/tools/fleet_cve_overview", "POST", {});
+      cveByHost = (cv && cv.by_host) || {};
+    } catch (e) { /* ignore */ }
     const s = data.summary || {};
     const rows = data.agents || [];
     const nodes = [
@@ -151,6 +156,7 @@
         el("th", null, "keepalive"),
         el("th", null, "staleness"),
         el("th", null, "STIG (30d)"),
+        el("th", null, "CVEs"),
         el("th", null, "logs"),
       )),
       el("tbody", null, ...sorted.map(r => {
@@ -184,6 +190,18 @@
             title: "STIG findings for " + (r.name || r.id) + " (30d)",
           }, el("span", { class: "badge " + ((stigByHost[r.name] || 0) > 0 ? "warn" : "dim") },
              String(stigByHost[r.name] || 0)))),
+          el("td", null, (() => {
+            const c = cveByHost[r.name];
+            if (!c) return el("span", { class: "muted" }, "-");
+            const crit = c.Critical || 0, high = c.High || 0;
+            return el("a", {
+              href: "/cve/" + encodeURIComponent(r.name || r.id),
+              "data-link": "",
+              title: "CVE findings for " + (r.name || r.id) +
+                " — " + (c.total || 0) + " total",
+            }, el("span", { class: "badge " + (crit > 0 ? "bad" : (high > 0 ? "warn" : "dim")) },
+               (crit ? crit + "C" : "") + (crit && high ? "/" : "") + (high ? high + "H" : "0")));
+          })()),
           el("td", null, isMgr ? el("span", { class: "muted" }, "-") : el("a", {
             href: "/logs/" + encodeURIComponent(r.name || r.id),
             "data-link": "",
@@ -192,6 +210,95 @@
         );
       })),
     );
+  }
+
+  // ---- CVE review (Vulnerability Detector state index) ----
+  function sevBadge(sev) {
+    const cls = sev === "Critical" ? "bad" : sev === "High" ? "warn" :
+      sev === "Low" ? "dim" : "";
+    return badge(String(sev || "-") + " " + cls);
+  }
+  async function pageCveFleet() {
+    let data;
+    try { data = await api("/tools/fleet_cve_overview", "POST", {}); }
+    catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "fleet_cve_overview failed"));
+    const hosts = data.by_host || {};
+    const rows = Object.entries(hosts).sort((a, b) =>
+      (b[1].Critical || 0) - (a[1].Critical || 0) || (b[1].total || 0) - (a[1].total || 0));
+    return [
+      el("h1", null, "CVE findings \u2014 fleet rollup"),
+      el("p", { class: "muted" },
+        "Vulnerability Detector state (",
+        el("code", null, "wazuh-states-vulnerabilities-*"),
+        "). Click a host for its full findings."),
+      el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "agent"), el("th", null, "total"),
+          el("th", null, "critical"), el("th", null, "high"),
+          el("th", null, "medium"), el("th", null, "low"))),
+        el("tbody", null, ...rows.map(([name, s]) => el("tr", null,
+          el("td", null, el("a", { href: "/cve/" + encodeURIComponent(name),
+                                  "data-link": "" }, name)),
+          el("td", null, String(s.total || 0)),
+          el("td", null, badge(String(s.Critical || 0) + " " + ((s.Critical || 0) > 0 ? "bad" : "dim"))),
+          el("td", null, badge(String(s.High || 0) + " " + ((s.High || 0) > 0 ? "warn" : "dim"))),
+          el("td", null, String(s.Medium || 0)),
+          el("td", null, String(s.Low || 0)),
+        )))),
+      el("p", { class: "muted" },
+        "Fleet totals: " + Object.entries(data.totals || {})
+          .map(([k, v]) => k + " " + v).join(" \u00b7 ")),
+      el("p", null, el("a", { href: "/fleet", "data-link": "" }, "\u2190 Fleet")),
+    ];
+  }
+  async function pageCveHost(name) {
+    let data;
+    try {
+      data = await api("/tools/vulnerability_findings", "POST",
+                       { agent: name, size: 300 });
+    } catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "vulnerability_findings failed"));
+    const s = data.by_severity || {};
+    const find = data.findings || [];
+    const total = (data.by_host && data.by_host[name] &&
+                   data.by_host[name].total) ||
+                  Object.values(s).reduce((a, b) => a + b, 0);
+    const cards = el("div", { class: "cards" },
+      card("Total", total, ""),
+      card("Critical", s.Critical || 0, (s.Critical || 0) > 0 ? "bad" : "good"),
+      card("High", s.High || 0, (s.High || 0) > 0 ? "warn" : "good"),
+      card("Medium", s.Medium || 0, ""),
+      card("Low", s.Low || 0, "dim"));
+    const pkgs = data.top_packages || {};
+    return [
+      el("h1", null, "CVE findings: " + name),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/cve", "data-link": "" }, "\u2190 Fleet rollup"),
+        el("a", { class: "btn", href: "/fleet/" + encodeURIComponent(name), "data-link": "" }, "Host page"),
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+      ),
+      cards,
+      el("p", { class: "muted" },
+        "Most-affected packages: ",
+        ...Object.entries(data.top_packages || {}).slice(0, 8).map(([k, v], i) =>
+          el("span", { class: "badge dim" }, k + " (" + v + ")")),
+      ),
+      find.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "CVE"), el("th", null, "severity"), el("th", null, "CVSS"),
+          el("th", null, "package"), el("th", null, "installed"), el("th", null, "published"),
+          el("th", null, "description"))),
+        el("tbody", null, ...find.map(f => el("tr", null,
+          el("td", null, el("code", null, String(f.cve || "-"))),
+          el("td", null, sevBadge(f.severity)),
+          el("td", null, f.cvss != null ? String(f.cvss) : "-"),
+          el("td", null, f.package || "-"),
+          el("td", null, el("code", null, String(f.version || "-"))),
+          el("td", null, (f.published || "").substring(0, 10) || "-"),
+          el("td", null, (f.description || "-").substring(0, 110)),
+        )))) : el("p", { class: "empty" }, "No findings for this host."),
+    ];
   }
 
   // Wazuh dashboard deep link: discover filtered to one agent.
@@ -260,6 +367,8 @@
     const nodes = [
       el("h1", null, "Host: " + (a.name || agentId)),
       el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/cve/" + encodeURIComponent(a.name || agentId),
+                  "data-link": "", title: "CVE findings for " + (a.name || agentId) }, "CVEs"),
         el("a", { class: "btn", href: "/logs/" + encodeURIComponent(a.name || agentId),
                   "data-link": "", title: "Recent Wazuh alerts for " + (a.name || agentId) }, "Logs"),
         el("a", { class: "btn", target: "_blank", rel: "noopener",
@@ -1329,6 +1438,11 @@
     } else if (path.startsWith("/logs/")) {
       const name = decodeURIComponent(path.replace(/^\/logs\//, "").replace(/\/+$/, ""));
       if (name) nodes = await pageAgentLogs(name);
+    } else if (path === "/cve") {
+      nodes = await pageCveFleet();
+    } else if (path.startsWith("/cve/")) {
+      const name = decodeURIComponent(path.replace(/^\/cve\//, "").replace(/\/+$/, ""));
+      if (name) nodes = await pageCveHost(name);
     } else if (path === "/agents") {
       nodes = await pageAgents();
     } else if (path === "/tickets") {

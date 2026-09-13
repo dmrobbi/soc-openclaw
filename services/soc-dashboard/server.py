@@ -95,6 +95,7 @@ DASHBOARD_TOOLS = (
     "tasks_list", "task_get",
     "compliance_report", "stig_report", "run_fleet_scan",
     "agent_logs",
+    "vulnerability_findings", "fleet_cve_overview",
 )
 
 
@@ -552,6 +553,36 @@ def tool_agent_logs(args: Dict[str, Any]) -> Dict[str, Any]:
         "range": body.get("range"), "total": body.get("total"),
         "hits": body.get("hits", []),
     }
+
+
+def tool_vulnerability_findings(args: Dict[str, Any]) -> Dict[str, Any]:
+    """vulnerability_findings(agent=None, package=None, cve=None,
+    severity=None, size=200) -> CVE findings from the Vulnerability
+    Detector state index (proxy to C1 search_vulnerabilities)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    args = args or {}
+    payload = {k: v for k, v in args.items()
+               if k in ("agent", "package", "cve", "severity") and v}
+    payload["size"] = max(1, min(int(args.get("size") or 200), 500))
+    code, body = _http_post(f"{c1}/tools/search_vulnerabilities", payload,
+                            timeout=20.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 search_vulnerabilities failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "vulnerability_findings", **body}
+
+
+def tool_fleet_cve_overview(args: Dict[str, Any]) -> Dict[str, Any]:
+    """fleet_cve_overview() -> per-host CVE severity rollup (C1 proxy)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    code, body = _http_post(f"{c1}/tools/fleet_cve_overview", {},
+                            timeout=20.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 fleet_cve_overview failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "fleet_cve_overview",
+            "by_host": body.get("by_host", {}),
+            "totals": body.get("totals", {})}
 
 
 def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1082,6 +1113,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
+        # /cve fleet rollup + /cve/<agent> per-host CVE review
+        if path == "/cve" or path == "/cve/":
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/cve/[A-Za-z0-9_.-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
         # /logs/<agent> — recent Wazuh alerts for one agent (C1 proxy)
         if re.match(r"^/logs/[A-Za-z0-9_.-]+/?$", path):
             self._serve_static("index.html")
@@ -1167,6 +1207,8 @@ class _Handler(BaseHTTPRequestHandler):
             "stig_host_view": tool_stig_host_view,
             "fleet_host_view": tool_fleet_host_view,
             "agent_logs": tool_agent_logs,
+            "vulnerability_findings": tool_vulnerability_findings,
+            "fleet_cve_overview": tool_fleet_cve_overview,
             "run_scan": tool_run_scan_proxy,
             "run_host_compliance_scan": tool_run_host_compliance_scan,
             "tasks_list": tool_tasks_list,

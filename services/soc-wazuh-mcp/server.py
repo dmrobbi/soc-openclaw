@@ -61,7 +61,8 @@ DEFAULT_INDEXER_URL = "https://127.0.0.1:9200"
 MAX_HITS = 1000            # hard cap on _search size
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 TOOLS = ("search_alerts", "get_recent_alerts_for_host",
-         "get_rule_metadata", "get_agent_status", "list_agent_os")
+         "get_rule_metadata", "get_agent_status", "list_agent_os",
+         "search_vulnerabilities", "fleet_cve_overview")
 
 # Host name validation: 1-253 chars, RFC-1123-ish. We are
 # deliberately lax because SOC agents need to query by IP too.
@@ -370,6 +371,131 @@ def tool_get_agent_status(args: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Indexer client
 # ---------------------------------------------------------------------------
+VULN_INDEX = "wazuh-states-vulnerabilities-*"
+
+
+def tool_search_vulnerabilities(args: Dict[str, Any]) -> Dict[str, Any]:
+    """search_vulnerabilities(agent=None, package=None, cve=None,
+    severity=None, size=200) -> {ok, findings, by_severity, by_host,
+    top_packages}.
+
+    Four views over the Vulnerability Detector state index:
+      - no args: fleet rollup (aggregations only)
+      - agent=<name>: that host's findings
+      - package=<name>: one package across hosts (version compare)
+      - cve=<CVE-id>: one CVE, every affected host
+    """
+    import re as _re
+    agent = args.get("agent")
+    package = args.get("package")
+    cve = args.get("cve")
+    severity = args.get("severity")
+    size = max(1, min(int(args.get("size") or 200), 500))
+    if agent and not _re.match(r"^[A-Za-z0-9._-]{1,64}$", str(agent)):
+        raise ValueError(f"invalid agent: {agent!r}")
+    if package and not _re.match(r"^[A-Za-z0-9+._-]{1,64}$", str(package)):
+        raise ValueError(f"invalid package: {package!r}")
+    if cve and not _re.match(r"^CVE-\d{4}-\d{4,7}$", str(cve)):
+        raise ValueError(f"invalid cve: {cve!r}")
+    if severity and not _re.match(r"^(Critical|High|Medium|Low|-)$",
+                                  str(severity)):
+        raise ValueError(f"invalid severity: {severity!r}")
+
+    must: List[Dict[str, Any]] = []
+    # NOTE: the vulnerabilities template maps these fields as keyword
+    # DIRECTLY (unlike wazuh-alerts text fields) — no .keyword subfield.
+    if agent:
+        must.append({"term": {"agent.name": agent}})
+    if package:
+        must.append({"term": {"package.name": package}})
+    if cve:
+        must.append({"term": {"vulnerability.id": cve}})
+    if severity:
+        must.append({"term": {"vulnerability.severity": severity}})
+    query: Dict[str, Any] = ({"bool": {"filter": must}} if must
+                             else {"match_all": {}})
+
+    rollup = _post_search({
+        "size": 0,
+        "aggs": {
+            "sev": {"terms": {"field": "vulnerability.severity", "size": 8}},
+            "by_host": {"terms": {"field": "agent.name", "size": 30}},
+            "top_packages": {"terms": {"field": "package.name", "size": 10}},
+        },
+        "query": query,
+    }, expect_aggs=True, index=VULN_INDEX)
+    aggs = (rollup or {}).get("aggregations", {}) or {}
+    by_severity = {b["key"]: b["doc_count"]
+                   for b in (aggs.get("sev") or {}).get("buckets", [])}
+    by_host = {b["key"]: b["doc_count"]
+               for b in (aggs.get("by_host") or {}).get("buckets", [])}
+    top_packages = {b["key"]: b["doc_count"]
+                    for b in (aggs.get("top_packages") or {}).get("buckets",
+                                                                  [])}
+
+    hits = _post_search({
+        "size": size,
+        "sort": [{"vulnerability.score.base": {"order": "desc",
+                                               "missing": "_last"}}],
+        "_source": ["agent.id", "agent.name",
+                    "vulnerability.id", "vulnerability.severity",
+                    "vulnerability.score.base", "vulnerability.description",
+                    "vulnerability.published_at",
+                    "package.name", "package.version",
+                    "package.architecture", "status"],
+        "query": query,
+    }, index=VULN_INDEX).get("hits", {}).get("hits", [])
+
+    findings = []
+    for h in hits:
+        s = h.get("_source", {})
+        vul = s.get("vulnerability") or {}
+        pkg = s.get("package") or {}
+        agt = s.get("agent") or {}
+        findings.append({
+            "agent_id": agt.get("id"), "agent_name": agt.get("name"),
+            "cve": vul.get("id"), "severity": vul.get("severity"),
+            "cvss": (vul.get("score") or {}).get("base"),
+            "description": vul.get("description"),
+            "published": vul.get("published_at"),
+            "package": pkg.get("name"), "version": pkg.get("version"),
+            "architecture": pkg.get("architecture"),
+            "status": s.get("status"),
+        })
+
+    return {"ok": True, "tool": "search_vulnerabilities",
+            "params": {"agent": agent, "package": package, "cve": cve,
+                       "severity": severity},
+            "total": len(findings), "by_severity": by_severity,
+            "by_host": by_host, "top_packages": top_packages,
+            "findings": findings}
+
+
+def tool_fleet_cve_overview(args: Dict[str, Any]) -> Dict[str, Any]:
+    """fleet_cve_overview() -> per-host severity rollup for fleet-page
+    columns: {host: {Critical: n, High: n, Medium: n, Low: n, total: n}}."""
+    rollup = _post_search({
+        "size": 0,
+        "aggs": {
+            "by_host": {"terms": {"field": "agent.name", "size": 30},
+                        "aggs": {"sev": {"terms": {
+                            "field": "vulnerability.severity", "size": 6}}}},
+            "sev": {"terms": {"field": "vulnerability.severity", "size": 8}},
+        },
+        "query": {"match_all": {}},
+    }, expect_aggs=True, index=VULN_INDEX)
+    aggs = (rollup or {}).get("aggregations", {})
+    hosts: Dict[str, Dict[str, int]] = {}
+    for b in (aggs.get("by_host") or {}).get("buckets", []):
+        hosts[b["key"]] = {x["key"]: x["doc_count"]
+                           for x in (b.get("sev") or {}).get("buckets", [])}
+        hosts[b["key"]]["total"] = b["doc_count"]
+    totals = {b["key"]: b["doc_count"]
+              for b in (aggs.get("sev") or {}).get("buckets", [])}
+    return {"ok": True, "tool": "fleet_cve_overview",
+            "by_host": hosts, "totals": totals}
+
+
 def _post_search(body: Dict[str, Any], expect_aggs: bool = False,
                  index: str = "wazuh-alerts-*") -> Dict[str, Any]:
     """POST a _search to the indexer. Returns the raw response dict."""
@@ -463,6 +589,8 @@ class _Handler(BaseHTTPRequestHandler):
             "get_rule_metadata": tool_get_rule_metadata,
             "get_agent_status": tool_get_agent_status,
             "list_agent_os": tool_list_agent_os,
+            "search_vulnerabilities": tool_search_vulnerabilities,
+            "fleet_cve_overview": tool_fleet_cve_overview,
         }[tool]
         try:
             result = impl(args)
