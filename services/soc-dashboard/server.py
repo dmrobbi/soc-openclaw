@@ -142,24 +142,31 @@ def _load_routing_tenants() -> Optional[Dict[str, Any]]:
         import yaml  # noqa: F401
     except ImportError:
         return None
-    # __file__ is soc-dashboard/server.py, so the repo root
-    # is 4 levels up: soc-dashboard/ -> soc/ -> scripts/ -> REPO.
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))))
-    for path in (os.path.join(repo_root, "config", "soc-routing.yaml"),
-                 os.path.join(repo_root, "config",
-                              "soc-routing.yaml.example")):
-        if os.path.exists(path):
-            try:
-                with open(path) as f:
-                    raw = yaml.safe_load(f)
-                tenants = raw.get("tenants") or {}
-                return {tid: t.get("display_name", tid)
-                        for tid, t in tenants.items()}
-            except Exception as e:
-                sys.stderr.write(
-                    f"[soc-dashboard] routing config load failed: {e}\n")
-                return None
+    # Honor SOC_ROUTING_CONFIG first — the same live routing config every
+    # other component reads (the systemd unit sets it). Then repo-relative
+    # fallbacks: __file__ is soc-dashboard/server.py, so the repo root is
+    # 3 levels up: soc-dashboard/ -> services/ -> REPO.
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    env_path = os.environ.get("SOC_ROUTING_CONFIG")
+    candidates = ([env_path] if env_path else []) + [
+        os.path.join(repo_root, "config", "soc-routing.yaml"),
+        os.path.join(repo_root, "config", "soc-routing.yaml.example"),
+    ]
+    for path in candidates:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                raw = yaml.safe_load(f)
+            tenants = raw.get("tenants") or {}
+            return {tid: (t.get("display_name", tid)
+                          if isinstance(t, dict) else tid)
+                    for tid, t in tenants.items()}
+        except Exception as e:
+            sys.stderr.write(
+                f"[soc-dashboard] routing config load failed ({path}): {e}\n")
+            continue
     return None
 
 
