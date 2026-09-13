@@ -212,6 +212,197 @@
     );
   }
 
+  // ---- Packages & CVEs (inventory + vulnerability join) ----
+  let packagesQ = "";
+  let diffHostA = "", diffHostB = "";
+  let packageHosts = [];
+  async function pagePackages() {
+    if (!packageHosts.length) {
+      try {
+        const fleet = await api("/tools/fleet_status", "POST", {});
+        packageHosts = (fleet.agents || []).map(a => a.name).filter(Boolean).sort();
+      } catch (e) { /* fleet names optional for this page */ }
+    }
+    let rows = null, note = "";
+    if (packagesQ) {
+      try {
+        const data = await api("/tools/packages_search", "POST",
+                               { q: packagesQ, size: 500 });
+        if (!data.ok) return errorView(new Error(data.error || "packages_search failed"));
+        rows = data.rows || [];
+        note = data.total + " installed copies matched (capped at 500 rows)";
+      } catch (e) { return errorView(e); }
+    }
+    // group rows by package when searching
+    let grouped = [];
+    if (rows) {
+      const byName = {};
+      for (const r of rows) {
+        (byName[r.package] = byName[r.package] || []).push(r);
+      }
+      grouped = Object.entries(byName)
+        .map(([nm, rs]) => ({ name: nm, hosts: rs,
+                              cve: Math.max(...rs.map(r => r.cve_count || 0)) }))
+        .sort((a, b) => b.cve - a.cve || a.name.localeCompare(b.name));
+    }
+    return [
+      el("h1", null, "Packages & CVEs"),
+      el("div", { class: "btn-row" },
+        el("input", {
+          type: "text", value: packagesQ, placeholder: "package name contains…",
+          style: "padding:7px 12px;border:1px solid var(--border);border-radius:6px;background:#1b2028;color:#e6e9ef;font:inherit;min-width:260px",
+          onkeydown: (ev) => { if (ev.key === "Enter") { packagesQ = ev.target.value.trim(); render(); } },
+        }),
+        el("button", { class: "btn", onclick: (ev) => {
+          packagesQ = ev.target.parentElement.querySelector("input").value.trim(); render();
+        } }, "Search"),
+        el("a", { class: "btn", href: "/cve", "data-link": "" }, "CVE rollup"),
+      ),
+      el("p", { class: "muted" },
+        "Searches the package inventory (",
+        el("code", null, "wazuh-states-inventory-packages-*"),
+        ") across every agent; each result is annotated with the number of CVE findings known for that package."),
+      el("div", { class: "btn-row" },
+        el("select", { onchange: (ev) => { diffHostA = ev.target.value; } },
+          el("option", { value: "" }, "diff: host A…"),
+          ...packageHosts.map(n => el("option",
+            { value: n, ...(diffHostA === n ? { selected: "selected" } : {}) }, n))),
+        el("select", { onchange: (ev) => { diffHostB = ev.target.value; } },
+          el("option", { value: "" }, "diff: host B…"),
+          ...packageHosts.map(n => el("option",
+            { value: n, ...(diffHostB === n ? { selected: "selected" } : {}) }, n))),
+        el("button", { class: "btn", onclick: () => {
+          if (diffHostA && diffHostB) {
+            history.pushState({}, "", "/packages-diff/" +
+              encodeURIComponent(diffHostA) + "/" + encodeURIComponent(diffHostB));
+            render();
+          }
+        } }, "Compare hosts"),
+      ),
+      !packagesQ ? el("p", { class: "empty" },
+        "Type a package name above — e.g. openssl, nginx, sudo — to compare versions across hosts and see its CVEs. Or pick two hosts and hit \u2018Compare hosts\u2019 for a full package diff.") : null,
+      rows && grouped.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "package"), el("th", null, "hosts"),
+          el("th", null, "max CVEs"),
+          el("th", null, "versions in fleet"))),
+        el("tbody", null, ...grouped.slice(0, 60).map(g => el("tr", null,
+          el("td", null, el("a", { href: "/packages/" + encodeURIComponent(g.name),
+                                  "data-link": "" }, g.name)),
+          el("td", null, String(g.hosts.length)),
+          el("td", null, g.cve > 0 ? badge(String(g.cve) + " warn") : el("span", { class: "muted" }, "0")),
+          el("td", null, el("code", null, [...new Set(g.hosts.map(h => h.version))].join(", ").substring(0, 90))),
+        )))) : null,
+      rows && note ? el("p", { class: "muted" }, note + " — showing first " + Math.min(rows.length, 60) + " packages") : null,
+    ];
+  }
+  async function pagePackageDetail(name) {
+    let inv, vul;
+    try {
+      [inv, vul] = await Promise.all([
+        api("/tools/packages_search", "POST", { name: name, size: 500 }),
+        api("/tools/vulnerability_findings", "POST", { package: name, size: 200 }),
+      ]);
+    } catch (e) { return errorView(e); }
+    if (!inv.ok) return errorView(new Error(inv.error || "packages_search failed"));
+    const rows = inv.rows || [];
+    const sev = (vul && vul.by_severity) || {};
+    const find = (vul && vul.findings) || [];
+    return [
+      el("h1", null, "Package: " + name),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/packages", "data-link": "" }, "\u2190 Packages"),
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+      ),
+      el("p", { class: "muted" },
+        "Installed on ", el("code", null, String(rows.length)), " host(s). ",
+        "CVE findings for this package: ",
+        ...Object.entries(sev).map(([k, v]) => el("span", { class: "badge " + (k === "Critical" ? "bad" : k === "High" ? "warn" : "dim") }, k + " " + v))),
+      el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "agent"), el("th", null, "installed version"),
+          el("th", null, "arch"), el("th", null, "CVEs for this pkg"))),
+        el("tbody", null, ...rows.map(r => el("tr", null,
+          el("td", null, el("a", { href: "/cve/" + encodeURIComponent(r.agent),
+                                  "data-link": "" }, r.agent || "-")),
+          el("td", null, el("code", null, String(r.version || "-"))),
+          el("td", null, r.architecture || "-"),
+          el("td", null, r.cve_count > 0 ? badge(String(r.cve_count) + " warn") : el("span", { class: "muted" }, "0")),
+        )))),
+      find.length ? el("h2", null, "CVEs affecting " + name) : null,
+      find.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "CVE"), el("th", null, "severity"), el("th", null, "CVSS"),
+          el("th", null, "on host"), el("th", null, "description"))),
+        el("tbody", null, ...find.map(f => el("tr", null,
+          el("td", null, el("code", null, String(f.cve || "-"))),
+          el("td", null, sevBadge(f.severity)),
+          el("td", null, f.cvss != null ? String(f.cvss) : "-"),
+          el("td", null, f.agent_name || "-"),
+          el("td", null, (f.description || "-").substring(0, 110)),
+        )))) : el("p", { class: "muted" }, "No CVE findings recorded for this package."),
+    ];
+  }
+  async function pagePackageDiff(hostA, hostB) {
+    let data;
+    try {
+      data = await api("/tools/package_diff", "POST",
+                       { agent_a: hostA, agent_b: hostB });
+    } catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "package_diff failed"));
+    const mm = data.mismatch || [];
+    return [
+      el("h1", null, "Package diff: " + hostA + " vs " + hostB),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/packages", "data-link": "" }, "\u2190 Packages"),
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+      ),
+      el("p", { class: "muted" },
+        "Host A: ", el("code", null, String((data.counts || {}).a ?? "?")),
+        " packages \u00b7 Host B: ", el("code", null, String((data.counts || {}).b ?? "?")),
+        " \u00b7 common: ", el("code", null, String((data.counts || {}).common ?? "?")),
+        " \u00b7 version mismatches: ", el("code", null, String(mm.length))),
+      el("h2", null, "Version mismatches (CVE-annotated)"),
+      mm.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "package"), el("th", null, hostA), el("th", null, hostB),
+          el("th", null, "CVEs"))),
+        el("tbody", null, ...mm.slice(0, 200).map(r => el("tr", null,
+          el("td", null, el("a", { href: "/packages/" + encodeURIComponent(r.name),
+                                  "data-link": "" }, r.name)),
+          el("td", null, el("code", null, String(r.a.version || "-"))),
+          el("td", null, el("code", null, String(r.b.version || "-"))),
+          el("td", null, r.cve_count > 0 ? badge(String(r.cve_count) + " warn") : el("span", { class: "muted" }, "0")),
+        )))) : el("p", { class: "empty" }, "No version mismatches."),
+      el("h2", null, "Only on " + hostA + " (" + (data.only_a || []).length + ")"),
+      el("p", null, (data.only_a || []).slice(0, 200).map(r => r.name).join(" \u00b7 ") || "—"),
+      el("h2", null, "Only on " + hostB + " (" + (data.only_b || []).length + ")"),
+      el("p", null, (data.only_b || []).slice(0, 200).map(r => r.name).join(" \u00b7 ") || "—"),
+    ];
+  }
+  async function pagePackagesWithDiff() {
+    // fleet-wide host list for the diff selector
+    let fleet;
+    try { fleet = await api("/tools/fleet_status", "POST", {}); }
+    catch (e) { return errorView(e); }
+    const names = (fleet.agents || []).map(a => a.name).filter(Boolean).sort();
+    const base = await pagePackages();
+    const selA = el("select", { onchange: (ev) => { diffHostA = ev.target.value; } },
+      el("option", { value: "" }, "host A…"),
+      ...names.map(n => el("option", { value: n }, n)));
+    const selB = el("select", { onchange: (ev) => { diffHostB = ev.target.value; } },
+      el("option", { value: "" }, "host B…"),
+      ...names.map(n => el("option", { value: n }, n)));
+    return [base[0],
+      el("div", { class: "btn-row" },
+        selA, selB,
+        el("a", { class: "btn", href: () => "/packages-diff/" + diffHostA + "/" + diffHostB,
+                  onclick: (ev) => { ev.preventDefault();
+                    if (diffHostA && diffHostB) location.hash = ""; else ev.stopPropagation(); } }, "Diff"),
+      ),
+      ...base.slice(1)];
+  }
+
   // ---- CVE review (Vulnerability Detector state index) ----
   function sevBadge(sev) {
     const cls = sev === "Critical" ? "bad" : sev === "High" ? "warn" :
@@ -1443,6 +1634,15 @@
     } else if (path.startsWith("/cve/")) {
       const name = decodeURIComponent(path.replace(/^\/cve\//, "").replace(/\/+$/, ""));
       if (name) nodes = await pageCveHost(name);
+    } else if (path === "/packages") {
+      nodes = await pagePackages();
+    } else if (path.startsWith("/packages-diff/")) {
+      const rest = decodeURIComponent(path.replace(/^\/packages-diff\//, "").replace(/\/+$/, ""));
+      const parts = rest.split("/");
+      if (parts.length >= 2) nodes = await pagePackageDiff(parts[0], parts[1]);
+    } else if (path.startsWith("/packages/")) {
+      const name = decodeURIComponent(path.replace(/^\/packages\//, "").replace(/\/+$/, ""));
+      if (name) nodes = await pagePackageDetail(name);
     } else if (path === "/agents") {
       nodes = await pageAgents();
     } else if (path === "/tickets") {

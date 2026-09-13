@@ -96,6 +96,7 @@ DASHBOARD_TOOLS = (
     "compliance_report", "stig_report", "run_fleet_scan",
     "agent_logs",
     "vulnerability_findings", "fleet_cve_overview",
+    "packages_search", "package_diff",
 )
 
 
@@ -583,6 +584,34 @@ def tool_fleet_cve_overview(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "tool": "fleet_cve_overview",
             "by_host": body.get("by_host", {}),
             "totals": body.get("totals", {})}
+
+
+def tool_packages_search(args: Dict[str, Any]) -> Dict[str, Any]:
+    """packages_search(name=None, q=None, size=500) -> package inventory
+    rows with CVE-count annotation (proxy to C1 search_packages)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    args = args or {}
+    payload = {k: args[k] for k in ("name", "q", "size") if args.get(k)}
+    code, body = _http_post(f"{c1}/tools/search_packages", payload,
+                            timeout=30.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 search_packages failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "packages_search", **body}
+
+
+def tool_package_diff(args: Dict[str, Any]) -> Dict[str, Any]:
+    """package_diff(agent_a, agent_b) -> installed-package comparison
+    (proxy to C1 package_diff)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    args = args or {}
+    payload = {k: args.get(k) for k in ("agent_a", "agent_b")}
+    code, body = _http_post(f"{c1}/tools/package_diff", payload,
+                            timeout=45.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 package_diff failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "package_diff", **body}
 
 
 def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1113,6 +1142,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
+        # /packages search + /packages/<name> detail + host diff
+        if path == "/packages" or path == "/packages/":
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/packages/[A-Za-z0-9+._%()-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/packages-diff/[A-Za-z0-9+._%()-]+/[A-Za-z0-9+._%()-]+/?$",
+                    path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
         # /cve fleet rollup + /cve/<agent> per-host CVE review
         if path == "/cve" or path == "/cve/":
             self._serve_static("index.html")
@@ -1209,6 +1252,8 @@ class _Handler(BaseHTTPRequestHandler):
             "agent_logs": tool_agent_logs,
             "vulnerability_findings": tool_vulnerability_findings,
             "fleet_cve_overview": tool_fleet_cve_overview,
+            "packages_search": tool_packages_search,
+            "package_diff": tool_package_diff,
             "run_scan": tool_run_scan_proxy,
             "run_host_compliance_scan": tool_run_host_compliance_scan,
             "tasks_list": tool_tasks_list,

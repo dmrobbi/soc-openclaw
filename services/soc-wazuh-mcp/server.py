@@ -62,7 +62,10 @@ MAX_HITS = 1000            # hard cap on _search size
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 TOOLS = ("search_alerts", "get_recent_alerts_for_host",
          "get_rule_metadata", "get_agent_status", "list_agent_os",
-         "search_vulnerabilities", "fleet_cve_overview")
+         "search_vulnerabilities", "fleet_cve_overview",
+         "search_packages", "package_diff")
+
+PACK_INDEX = "wazuh-states-inventory-packages-*"
 
 # Host name validation: 1-253 chars, RFC-1123-ish. We are
 # deliberately lax because SOC agents need to query by IP too.
@@ -496,6 +499,107 @@ def tool_fleet_cve_overview(args: Dict[str, Any]) -> Dict[str, Any]:
             "by_host": hosts, "totals": totals}
 
 
+def _vuln_counts_by_package() -> Dict[str, int]:
+    """One agg: CVE-finding count per package name (vuln state index)."""
+    rollup = _post_search({
+        "size": 0,
+        "aggs": {"pkg": {"terms": {"field": "package.name", "size": 5000}}},
+        "query": {"match_all": {}},
+    }, expect_aggs=True, index=VULN_INDEX)
+    aggs = (rollup or {}).get("aggregations", {})
+    return {b["key"]: b["doc_count"]
+            for b in (aggs.get("pkg") or {}).get("buckets", [])}
+
+
+def tool_search_packages(args: Dict[str, Any]) -> Dict[str, Any]:
+    """search_packages(name=None, q=None, size=500) -> package inventory
+    rows (agent, name, version, arch) with per-row CVE count annotation.
+
+      - name=<exact>: one package, every host that has it
+      - q=<substring>: wildcard search across the inventory
+    """
+    name = args.get("name")
+    q = args.get("q")
+    size = max(1, min(int(args.get("size") or 500), 2000))
+    if not name and not q:
+        raise ValueError("name or q is required")
+    if q and name:
+        raise ValueError("give name OR q, not both")
+    must: List[Dict[str, Any]] = []
+    if name:
+        must.append({"term": {"package.name": name}})
+    if q:
+        must.append({"wildcard": {"package.name": f"*{q.lower()}*"}})
+    res = _post_search({
+        "size": size,
+        "sort": [{"package.name": {"order": "asc"}}],
+        "_source": ["agent.name", "package.name", "package.version",
+                    "package.architecture"],
+        "query": {"bool": {"filter": must}},
+    }, index=PACK_INDEX)
+    rows = []
+    for h in (res.get("hits") or {}).get("hits", []):
+        s = h.get("_source", {})
+        pkg = s.get("package") or {}
+        agt = s.get("agent") or {}
+        rows.append({"agent": agt.get("name"), "package": pkg.get("name"),
+                     "version": pkg.get("version"),
+                     "architecture": pkg.get("architecture")})
+    counts = _vuln_counts_by_package()
+    for r in rows:
+        r["cve_count"] = counts.get(r["package"], 0)
+    return {"ok": True, "tool": "search_packages",
+            "params": {"name": name, "q": q},
+            "total": len(rows), "rows": rows}
+
+
+def tool_package_diff(args: Dict[str, Any]) -> Dict[str, Any]:
+    """package_diff(agent_a, agent_b) -> compare installed packages:
+    only_a, only_b, version_mismatch (each mismatch annotated with the
+    package's CVE-finding count)."""
+    import re as _re
+    a = args.get("agent_a")
+    b = args.get("agent_b")
+    for h in (a, b):
+        if not h or not _re.match(r"^[A-Za-z0-9._-]{1,64}$", str(h)):
+            raise ValueError(f"invalid agent: {h!r}")
+
+    def fetch(host):
+        res = _post_search({
+            "size": 5000,
+            "_source": ["package.name", "package.version",
+                        "package.architecture"],
+            "query": {"bool": {"filter": [
+                {"term": {"agent.name": host}}]}},
+        }, index=PACK_INDEX)
+        out: Dict[str, Dict[str, str]] = {}
+        for h2 in (res.get("hits") or {}).get("hits", []):
+            s = h2.get("_source", {})
+            pkg = s.get("package") or {}
+            nm = pkg.get("name")
+            if nm:
+                out[nm] = {"version": pkg.get("version"),
+                           "architecture": pkg.get("architecture")}
+        return out
+
+    pa, pb = fetch(a), fetch(b)
+    counts = _vuln_counts_by_package()
+    only_a = sorted(set(pa) - set(pb))
+    only_b = sorted(set(pb) - set(pa))
+    mismatch = [{"name": n, "a": pa[n], "b": pb[n],
+                 "cve_count": counts.get(n, 0)}
+                for n in sorted(set(pa) & set(pb)) if pa[n] != pb[n]]
+    mismatch.sort(key=lambda r: -r["cve_count"])
+    return {"ok": True, "tool": "package_diff",
+            "agent_a": a, "agent_b": b,
+            "counts": {"a": len(pa), "b": len(pb), "common": len(set(pa) & set(pb))},
+            "only_a": [{"name": n, "version": pa[n]["version"],
+                        "cve_count": counts.get(n, 0)} for n in only_a],
+            "only_b": [{"name": n, "version": pb[n]["version"],
+                        "cve_count": counts.get(n, 0)} for n in only_b],
+            "mismatch": mismatch}
+
+
 def _post_search(body: Dict[str, Any], expect_aggs: bool = False,
                  index: str = "wazuh-alerts-*") -> Dict[str, Any]:
     """POST a _search to the indexer. Returns the raw response dict."""
@@ -591,6 +695,8 @@ class _Handler(BaseHTTPRequestHandler):
             "list_agent_os": tool_list_agent_os,
             "search_vulnerabilities": tool_search_vulnerabilities,
             "fleet_cve_overview": tool_fleet_cve_overview,
+            "search_packages": tool_search_packages,
+            "package_diff": tool_package_diff,
         }[tool]
         try:
             result = impl(args)
