@@ -49,25 +49,42 @@ scp /usr/share/xml/scap/ssg/content/<ds>.xml wez@<target>:/tmp/
 ssh wez@<target> 'sudo -n nohup oscap xccdf eval \
   --profile <profile-id> --results /tmp/scan-results.xml \
   --report /tmp/scan-report.html /tmp/<ds>.xml > /tmp/scan.log 2>&1 &'
-# later: scp the results back and parse
+# later: scp the results back into ~/.openclaw/soc/scans/<day>/ as
+# results-<host>.xml, then run the automated collect (§5):
+#   python3 scanner/soc_scanner.py --collect <day> --score
 ```
 
-## 5. Fleet scans → ONE merged evidence write
+## 5. Collect + merge results (ONE evidence write per control/day)
 
 The evidence store is keyed `<tenant>/<control>/<day>.jsonl` and each
 write **replaces** the day file — per-host writes would thrash scores
-(last-write-wins). Use the fleet collector: it parses every host's
-results, takes the worst result per rule across hosts, and does a single
-write.
+(last-write-wins). The scanner merges automatically:
+
+- `--fleet` scans all reachable hosts and then performs a **single
+  merged write** (worst result per rule across hosts).
+- `--collect <day>` re-collects from archived results — the post-scan
+  half of the detached flow in §4. It discovers
+  `~/.openclaw/soc/scans/<day>/results-*.xml` (or the recorded
+  `manifest.json`), infers each host's datastream from the results'
+  Benchmark id, merges, writes evidence once, records the tenant into
+  the manifest, and optionally rescores:
 
 ```bash
-# manifest: [{"host":"thing1","results":".../results-thing1.xml","ds":"...xml"}, ...]
 cd services && env SOC_ROUTING_CONFIG=$HOME/.openclaw/soc/soc-routing.yaml \
   SOC_EVIDENCE_DIR=$HOME/.openclaw/soc/compliance/evidence \
-  python3 scanner/collect_fleet_day.py \
-  --tenant bedimsecurity --day 2026-09-13 \
-  --manifest $HOME/.openclaw/soc/scans/2026-09-13/manifest.json --score
+  python3 scanner/soc_scanner.py --collect 2026-09-13 \
+  --tenant bedimsecurity --score
 ```
+
+`--dry-run` prints what would be merged without writing. Tenant
+attribution is recorded in the day's `manifest.json` by `--collect`,
+and the nightly `soc-compliance-daily.timer` (06:30 UTC) re-collects
+any scans archived that day and recomputes all tenant scores
+automatically.
+
+`scanner/collect_fleet_day.py --tenant T --day D --manifest M [--score]`
+remains for compatibility; it now delegates to the same
+`soc_scanner.merge_results` implementation.
 
 Merge rule per rule-id across hosts: any fail → fail; all pass/fixed →
 pass; otherwise the rule is dropped (neutral). The output JSON includes

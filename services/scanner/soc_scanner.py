@@ -196,7 +196,7 @@ def scan_host(agent: Dict[str, Any], day: str,
         return {"ok": False, "host": name,
                 "error": f"scan timed out after {SCAN_TIMEOUT}s"}
     return {"ok": ok, "host": name, "agent_id": agent.get("id"),
-            "returncode": rc,
+            "returncode": rc, "ds_path": ds_path,
             "results_path": str(results_xml) if results_xml.exists() else None,
             "report_path": str(report_html) if report_html.exists() else None,
             "stdout_tail": (proc.stdout or "")[-800:],
@@ -231,6 +231,202 @@ def parse_ds_rule_nist(ds_path: str) -> Dict[str, List[str]]:
                 refs.append(m.group(0))
         if refs:
             out[rid] = refs
+    return out
+
+
+# ---- fleet collect: merge results -> ONE evidence write -------------------
+
+_PASS_RESULTS = {"pass", "fixed"}
+
+# results files record the benchmark id they evaluated, e.g.
+# xccdf_org.ssgproject.content_benchmark_UBUNTU_24-04 (verified on the
+# 2026-09-13 archive). Longest-prefix match — UBUNTU_24-04 before
+# UBUNTU_24, DEBIAN-12 before DEBIAN.
+_BENCH_DS_MAP = {
+    "UBUNTU_24-04": "ssg-ubuntu2404-ds.xml",
+    "UBUNTU_22-04": "ssg-ubuntu2204-ds.xml",
+    "DEBIAN-12": "ssg-debian12-ds.xml",
+    "DEBIAN-11": "ssg-debian11-ds.xml",
+    "RHEL-9": "ssg-rhel9-ds.xml",
+    "RHEL-8": "ssg-rhel8-ds.xml",
+    "CENTOS-9": "ssg-centos9-ds.xml",
+    "FEDORA": "ssg-fedora-ds.xml",
+}
+
+
+def _benchmark_to_ds(results_xml: str) -> Optional[str]:
+    """Guess the SSG datastream filename from a results file's
+    Benchmark id, so a day's scans can be re-collected without the
+    original manifest. Returns "" when nothing matches."""
+    try:
+        with open(results_xml, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(262144)
+    except OSError:
+        return None
+    m = re.search(r"xccdf_org\.ssgproject\.content_benchmark_([A-Za-z0-9_.-]+)",
+                  head)
+    if not m:
+        return None
+    bench = m.group(1)
+    for key in sorted(_BENCH_DS_MAP, key=len, reverse=True):
+        if bench == key or bench.startswith(key):
+            cand = SSG_DIR / _BENCH_DS_MAP[key]
+            if cand.exists():
+                return str(cand)
+    return None
+
+
+def _specs_from_day(day: str, manifest_path: Optional[str] = None
+                    ) -> List[Dict[str, str]]:
+    """Build scan specs for `day`: the recorded manifest.json if present,
+    else synthesized from results-*.xml on disk. Missing ds paths are
+    backfilled from each results file's Benchmark id. Specs whose ds
+    cannot be resolved are dropped (they cannot be mapped to controls)."""
+    day_dir = SCAN_RESULTS_DIR / day
+    if manifest_path is None:
+        manifest_path = str(day_dir / "manifest.json")
+    specs: List[Dict[str, str]] = []
+    p = Path(manifest_path)
+    if p.exists():
+        try:
+            for row in json.loads(p.read_text()):
+                rp = Path(row.get("results") or "")
+                if not rp.exists():
+                    continue
+                specs.append({"host": str(row.get("host") or rp.stem),
+                              "results": str(rp),
+                              "ds": str(row.get("ds") or ""),
+                              "tenant": str(row.get("tenant") or "")})
+        except Exception:
+            specs = []
+    if not specs:
+        for rp in sorted(day_dir.glob("results-*.xml")):
+            specs.append({"host": rp.stem[len("results-"):],
+                          "results": str(rp), "ds": "", "tenant": ""})
+    out = []
+    for spec in specs:
+        if not spec["ds"] or not Path(spec["ds"]).exists():
+            spec["ds"] = _benchmark_to_ds(spec["results"]) or ""
+        if spec["ds"]:
+            out.append(spec)
+    return out
+
+
+def merge_results(specs: List[Dict[str, str]], tenant_id: str, day: str,
+                  dry_run: bool = False) -> Dict[str, Any]:
+    """Worst-result merge of multiple hosts' scan results into ONE
+    evidence write per control/day (canonical implementation of the
+    collect_fleet_day.py merge rule):
+      any host "fail"      -> fail
+      all "pass"/"fixed"   -> pass
+      otherwise            -> rule dropped (neutral)
+    With dry_run=True nothing is written; counts are still computed."""
+    per_host: Dict[str, Any] = {}
+    occ: Dict[str, List] = {}
+    refs: Dict[str, List[str]] = {}
+    skipped: List[Dict[str, str]] = []
+    for spec in specs:
+        host, rp, ds = spec["host"], spec["results"], spec["ds"]
+        if not ds or not Path(ds).exists():
+            skipped.append({"host": host, "reason": "datastream unresolved"})
+            continue
+        try:
+            rows = parse_rule_results(rp)
+        except Exception as exc:
+            skipped.append({"host": host, "reason": repr(exc)})
+            continue
+        per_host[host] = {
+            "rules": len(rows),
+            "pass": sum(1 for r in rows if r["result"] in _PASS_RESULTS),
+            "fail": sum(1 for r in rows if r["result"] == "fail"),
+        }
+        for r in rows:
+            occ.setdefault(r["rule"], []).append((host, r["result"]))
+        for rule, rl in parse_ds_rule_nist(ds).items():
+            lst = refs.setdefault(rule, [])
+            for ref in rl:
+                if ref not in lst:
+                    lst.append(ref)
+    merged_rows = []
+    for rule, o in occ.items():
+        results = {x[1] for x in o}
+        if "fail" in results:
+            w = "fail"
+        elif results and results <= _PASS_RESULTS:
+            w = "pass"
+        else:
+            continue  # notchecked/notselected/mixed-neutral -> drop
+        merged_rows.append({"rule": rule, "result": w,
+                            "hosts": sorted({h for h, _ in o}),
+                            "source": "oscap"})
+    counts: Dict[str, int] = {}
+    if merged_rows and not dry_run:
+        counts = write_evidence(tenant_id, merged_rows, refs, day,
+                                "fleet:" + ",".join(sorted(per_host)))
+    return {"per_host": per_host, "merged_rules": len(merged_rows),
+            "evidence_counts": counts, "skipped": skipped}
+
+
+def collect_day(day: str, tenant_id: Optional[str] = None,
+                manifest_path: Optional[str] = None,
+                score: bool = False, dry_run: bool = False
+                ) -> Dict[str, Any]:
+    """Collect + merge every scan recorded for `day` into the evidence
+    store (single write per control), optionally recompute the score.
+    Tenant resolution: explicit argument > manifest-recorded tenant >
+    SOC_OSCAP_TENANT > first known tenant."""
+    specs = _specs_from_day(day, manifest_path)
+    if not specs:
+        return {"ok": False,
+                "error": f"no scan results found for day {day} under "
+                         f"{SCAN_RESULTS_DIR / day}"}
+    if tenant_id is None:
+        for s in specs:
+            if s.get("tenant"):
+                tenant_id = s["tenant"]
+                break
+    if tenant_id is None:
+        tenant_id = _default_tenant()
+    if tenant_id is None:
+        return {"ok": False, "error": "no tenant resolved (pass --tenant "
+                "or set SOC_OSCAP_TENANT)"}
+    out: Dict[str, Any] = {"ok": True, "day": day, "tenant": tenant_id,
+                           "hosts": len(specs)}
+    out.update(merge_results(specs, tenant_id, day, dry_run=dry_run))
+    if not dry_run:
+        # record the day's manifest (host/ds/tenant) for later re-collects
+        day_dir = SCAN_RESULTS_DIR / day
+        day_dir.mkdir(parents=True, exist_ok=True)
+        mp = day_dir / "manifest.json"
+        rows: List[Dict[str, Any]] = []
+        seen = set()
+        if mp.exists():
+            try:
+                for row in json.loads(mp.read_text()):
+                    h = row.get("host")
+                    if h in seen:
+                        continue
+                    seen.add(h)
+                    # attribute pre-existing entries to the resolved
+                    # tenant too, so re-collects inherit it
+                    row["tenant"] = tenant_id
+                    rows.append(row)
+            except Exception:
+                pass
+        for s in specs:
+            if s["host"] in seen:
+                continue
+            seen.add(s["host"])
+            rows.append({"host": s["host"], "results": s["results"],
+                         "ds": s["ds"], "tenant": tenant_id})
+        mp.write_text(json.dumps(rows, indent=1))
+    if score and not dry_run:
+        try:
+            from soc_score import tool_compute_score
+            out["score"] = tool_compute_score({"tenant_id": tenant_id,
+                                               "day": day})
+        except Exception as exc:
+            out["score_error"] = repr(exc)
     return out
 
 
@@ -326,21 +522,48 @@ def _ds_path_for(agent: Dict[str, Any]) -> Optional[str]:
 def scan_fleet(agents: List[Dict[str, Any]], tenant_id: str, day: str,
                profile: Optional[str] = None,
                dry_run: bool = False) -> Dict[str, Any]:
+    """Scan every reachable managed host, then merge ALL hosts' results
+    into ONE evidence write (worst-result per rule, see merge_results).
+    Per-host immediate writes would thrash the evidence store: each
+    control/day file is replaced whole, so the last host scanned would
+    wipe every other host's findings (the 2026-09-13 lesson)."""
     started = _now()
     out: Dict[str, Any] = {"started": started, "scans": [], "errors": []}
+
+    def _scan(a):
+        return scan_host(a, day, profile=profile, dry_run=dry_run)
+
+    specs: List[Dict[str, str]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-        futs = {pool.submit(scan_and_record, a, tenant_id, day,
-                            profile, dry_run): a for a in agents}
+        futs = {pool.submit(_scan, a): a for a in agents}
         for fut in concurrent.futures.as_completed(futs):
             a = futs[fut]
             try:
-                out["scans"].append(fut.result())
+                res = fut.result()
             except Exception as exc:
                 out["errors"].append({"host": a.get("name"),
                                       "error": repr(exc)})
+                continue
+            out["scans"].append(res)
+            if res.get("ok") and res.get("results_path"):
+                specs.append({"host": str(res.get("host")),
+                              "results": str(res["results_path"]),
+                              "ds": str(res.get("ds_path") or ""),
+                              "tenant": tenant_id})
+    if dry_run:
+        out["counts"] = {"scanned": len(out["scans"]),
+                         "errors": len(out["errors"]),
+                         "would_merge_hosts": len(
+                             [s for s in out["scans"] if s.get("ok")])}
+        return out
     out["completed"] = _now()
+    if specs:
+        merged = merge_results(specs, tenant_id, day)
+        out["merge"] = merged
+        out["evidence"] = merged.get("evidence_counts")
     out["counts"] = {"scanned": len(out["scans"]),
-                     "errors": len(out["errors"])}
+                     "errors": len(out["errors"]),
+                     "merged_hosts": len(specs)}
     return out
 
 
@@ -364,6 +587,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                    "or any name if --host-ip is given")
     g.add_argument("--fleet", action="store_true",
                    help="scan every reachable managed host")
+    g.add_argument("--collect", metavar="DAY",
+                   help="merge + collect existing scan results for DAY "
+                        "(e.g. 2026-09-13) into evidence; combine with "
+                        "--score. Replaces the manual scp/parse/merge "
+                        "dance after detached scans")
+    ap.add_argument("--manifest", help="collect mode: manifest.json path "
+                    "(default: <scans-dir>/<day>/manifest.json; when "
+                    "absent, results-*.xml are discovered and the "
+                    "datastream is inferred from each results file)")
+    ap.add_argument("--score", action="store_true",
+                    help="collect mode: recompute the tenant score after "
+                    "collecting")
     ap.add_argument("--host-ip", help="target IP (skips fleet resolution; "
                     "requires --family when the host is not in the fleet)")
     ap.add_argument("--family", help="OS family override "
@@ -392,6 +627,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         print(json.dumps(res, indent=2, default=str))
         return 0 if res.get("ok", True) else 1
+
+    if args.collect:
+        return emit(collect_day(args.collect, tenant,
+                                manifest_path=args.manifest,
+                                score=args.score,
+                                dry_run=args.dry_run))
 
     if args.fleet:
         agents = [a for a in fleet_agents() if _family(a["platform"])]

@@ -1,0 +1,44 @@
+# systemd unit for the SOC nightly compliance refresh.
+#
+# Runs soc_compliance_daily.py: collect evidence for every tenant from
+# the audit/realtime/remediation logs, merge any OpenSCAP results
+# archived for the day (worst-result across hosts, ONE write per
+# control), and recompute all tenant scores so the dashboard trend
+# stays real without manual runs.
+#
+# Read-only with respect to Wazuh — no agent restarts, no mutations.
+#
+# Install: rendered from deploy/templates by deploy/install.sh; fired by
+# soc-compliance-daily.timer at 06:30 UTC daily, AFTER the 06:00
+# daily-decisions report (its input logs are the shippers' output).
+#
+# Env: mirrors soc-dashboard.service so evidence lands in the SAME
+# store the dashboard reads — the module defaults differ (they point at
+# ~/.openclaw/compliance, the live store is ~/.openclaw/soc/compliance).
+# The audit log override matches the systemd drop-in used on
+# soc-dashboard/soc-audit-mcp (the bind-mounted canonical copy).
+
+[Unit]
+Description=SOC nightly compliance refresh (evidence collect + scores)
+Documentation=file:///opt/soc-openclaw/services/soc_compliance_daily.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="SOC_ROUTING_CONFIG=/home/__SOC_USER__/.openclaw/soc/soc-routing.yaml"
+Environment="SOC_EVIDENCE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/evidence"
+Environment="SOC_AUDIT_LOG=/home/__SOC_USER__/.openclaw-wazuh/audit_log.jsonl"
+ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc_compliance_daily.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-compliance-daily
+TimeoutStartSec=900
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -5,24 +5,29 @@ evidence write per control/day.
 Why: the evidence store keys files as <tenant>/<control>/<day>.jsonl and
 _write_evidence replaces the whole file (first line carries _status). A
 per-host write therefore makes each host's collection overwrite the
-previous host's evidence for the same day ("last-scan-wins"). This script
+previous host's evidence for the same day ("last-scan-wins"). The merge
 parses every host's results.xml, reduces rules to the worst result across
 hosts, and performs a single write_evidence() — a coherent fleet-wide
 snapshot for the day.
+
+The merge logic lives in soc_scanner.merge_results (canonical since
+2026-09-14 — soc_scanner.py --collect and --fleet use the same code);
+this CLI remains for compatibility with the documented manual flow.
 
 Usage:
   env SOC_EVIDENCE_DIR=... python3 collect_fleet_day.py \
       --tenant bedimsecurity --day 2026-09-13 \
       --manifest /path/manifest.json [--score]
 
-manifest.json: [{"host": str, "results": path, "ds": path}, ...]
+manifest.json: [{"host": str, "results": path, "ds": path,
+                 "tenant": str (optional)}, ...]
 
 Merge rule (per rule id, across hosts):
   any "fail"            -> fail
   all "pass"/"fixed"    -> pass
   otherwise             -> rule dropped (neutral; contributes nothing)
 
-Output: JSON {per_host, merged_counts, evidence_counts, score}
+Output: JSON {per_host, merged_rules, evidence_counts, score?}
 """
 import argparse
 import json
@@ -34,12 +39,15 @@ from typing import Dict, List, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from soc_scanner import parse_ds_rule_nist, parse_rule_results, write_evidence  # noqa: E402
+from soc_scanner import merge_results, parse_ds_rule_nist, parse_rule_results, write_evidence  # noqa: E402,F401
 
 _PASS = {"pass", "fixed"}
 
 
 def _worst(occurrences):
+    """Worst result across (host, result) tuples — kept for backward
+    compatibility; the canonical implementation is inline in
+    soc_scanner.merge_results."""
     results = {o[1] for o in occurrences}
     if "fail" in results:
         return "fail"
@@ -57,41 +65,18 @@ def main() -> int:
     args = ap.parse_args()
 
     manifest = json.loads(Path(args.manifest).read_text())
+    specs = [{"host": str(row.get("host") or ""),
+              "results": str(row.get("results") or ""),
+              "ds": str(row.get("ds") or ""),
+              "tenant": args.tenant}
+             for row in manifest]
 
-    per_host = {}
-    occurrences: Dict[str, List[Tuple[str, str]]] = defaultdict(list)  # rule -> [(host, result)]
-    refs: Dict[str, list] = {}
-
-    for spec in manifest:
-        host, xml_path, ds_path = spec["host"], spec["results"], spec["ds"]
-        rows = parse_rule_results(xml_path)
-        per_host[host] = {
-            "rules": len(rows),
-            "pass": sum(1 for r in rows if r["result"] in _PASS),
-            "fail": sum(1 for r in rows if r["result"] == "fail"),
-        }
-        for r in rows:
-            occurrences[r["rule"]].append((host, r["result"]))
-        for rule, rl in parse_ds_rule_nist(ds_path).items():
-            refs.setdefault(rule, [])
-            for ref in rl:
-                if ref not in refs[rule]:
-                    refs[rule].append(ref)
-
-    merged_rows = []
-    for rule, occ in occurrences.items():
-        w = _worst(occ)
-        if w is None:
-            continue
-        hosts = sorted({h for h, _ in occ})
-        merged_rows.append({"rule": rule, "result": w,
-                            "hosts": hosts, "source": "oscap"})
-
-    counts = write_evidence(args.tenant, merged_rows, refs, args.day,
-                            "fleet:" + ",".join(sorted(per_host)))
-
-    out = {"per_host": per_host, "merged_rules": len(merged_rows),
-           "evidence_counts": counts}
+    res = merge_results(specs, args.tenant, args.day)
+    out = {"per_host": res["per_host"],
+           "merged_rules": res["merged_rules"],
+           "evidence_counts": res["evidence_counts"]}
+    if res.get("skipped"):
+        out["skipped"] = res["skipped"]
 
     if args.score:
         try:

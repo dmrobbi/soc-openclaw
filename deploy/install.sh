@@ -155,6 +155,11 @@ render "$TPL/realtime-soc-server.service" /etc/systemd/system/realtime-soc-serve
 render "$TPL/imap-watcher.service"        /etc/systemd/system/imap-watcher.service
 render "$TPL/soc-daily-decisions.service" /etc/systemd/system/soc-daily-decisions.service
 render "$TPL/soc-daily-decisions.timer"   /etc/systemd/system/soc-daily-decisions.timer
+render "$TPL/soc-compliance-daily.service" /etc/systemd/system/soc-compliance-daily.service
+render "$TPL/soc-compliance-daily.timer"   /etc/systemd/system/soc-compliance-daily.timer
+render "$TPL/soc-healthcheck.service"      /etc/systemd/system/soc-healthcheck.service
+render "$TPL/soc-healthcheck.timer"        /etc/systemd/system/soc-healthcheck.timer
+render "$TPL/soc-healthcheck-alert@.service" "/etc/systemd/system/soc-healthcheck-alert@.service"
 
 # IMPROVEMENT from the 2026-09-12 outage: the manager unit must actually
 # load the /tmp env its ExecStartPre materialises. Idempotent append.
@@ -178,6 +183,8 @@ for u in soc-dashboard soc-audit-mcp soc-tickets-mcp soc-memory-mcp soc-wazuh-mc
   run systemctl enable --now "$u" || log "WARN: enable --now $u failed (continuing)"
 done
 run systemctl enable --now soc-daily-decisions.timer
+run systemctl enable --now soc-compliance-daily.timer
+run systemctl enable --now soc-healthcheck.timer
 
 # ---- sub-agent fleet ----
 log "bootstrapping the sub-agent fleet"

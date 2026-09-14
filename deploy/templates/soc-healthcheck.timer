@@ -1,0 +1,15 @@
+# systemd timer for the SOC hourly healthcheck.
+#
+# Install: see soc-healthcheck.service (rendered by deploy/install.sh,
+# which enables this timer).
+
+[Unit]
+Description=SOC hourly healthcheck timer
+
+[Timer]
+OnCalendar=*-*-* *:00:00 UTC
+Persistent=true
+Unit=soc-healthcheck.service
+
+[Install]
+WantedBy=timers.target
