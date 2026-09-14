@@ -79,6 +79,17 @@ for f in "${SOC_SECRETS_DIR:-$HOME/.openclaw/soc/secrets}"/*.env; do
   esac
 done
 
+echo "--- soc pipeline state perms (container uid 999) ---"
+# 2026-09-14: root-owned files under the container state dir (from
+# manual `docker exec` WITHOUT `-u wazuh`) broke every LLM decision
+# turn for 3 weeks (EACCES + fallback to a token without
+# operator.write). Assert, never rewrite.
+SD=/home/wez/.openclaw-wazuh
+N=$(sudo -n find "$SD" -user 0 -not -type l 2>/dev/null | wc -l)
+[ "$N" -eq 0 ] && ok "pipeline state: no root-owned files" || bad "pipeline state: $N root-owned files — wazuh-context agent turns fail (run docker exec -u wazuh!)"
+O=$(sudo -n stat -c '%u' "$SD/identity" 2>/dev/null)
+[ "$O" = "999" ] && ok "identity dir owned by container user (999)" || bad "identity dir owner uid $O (want 999) — device credential unreadable by the pipeline"
+
 echo "---"
 echo "healthcheck: $PASS ok, $FAIL failed"
 [ "$FAIL" -eq 0 ]
