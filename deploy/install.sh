@@ -160,6 +160,8 @@ render "$TPL/soc-compliance-daily.timer"   /etc/systemd/system/soc-compliance-da
 render "$TPL/soc-healthcheck.service"      /etc/systemd/system/soc-healthcheck.service
 render "$TPL/soc-healthcheck.timer"        /etc/systemd/system/soc-healthcheck.timer
 render "$TPL/soc-healthcheck-alert@.service" "/etc/systemd/system/soc-healthcheck-alert@.service"
+render "$TPL/soc-scan-weekly.service" /etc/systemd/system/soc-scan-weekly.service
+render "$TPL/soc-scan-weekly.timer"   /etc/systemd/system/soc-scan-weekly.timer
 
 # IMPROVEMENT from the 2026-09-12 outage: the manager unit must actually
 # load the /tmp env its ExecStartPre materialises. Idempotent append.
@@ -185,6 +187,7 @@ done
 run systemctl enable --now soc-daily-decisions.timer
 run systemctl enable --now soc-compliance-daily.timer
 run systemctl enable --now soc-healthcheck.timer
+run systemctl enable --now soc-scan-weekly.timer
 
 # ---- sub-agent fleet ----
 log "bootstrapping the sub-agent fleet"

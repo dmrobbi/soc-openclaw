@@ -37,6 +37,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -579,10 +580,95 @@ def _default_tenant() -> Optional[str]:
         return None
 
 
+def _tasklog():
+    """Lazy services/soc_tasklog (best-effort; None when unavailable)."""
+    try:
+        import soc_tasklog
+        return soc_tasklog
+    except Exception:
+        return None
+
+
+def _tasklog_run(run_id_target: str, fn, *args, **kwargs) -> Any:
+    """Run a scan entrypoint with tasklog running→done/failed rows so
+    /tasks shows automated runs with real state (2026-09-14: the CLI
+    was invisible to the task pane)."""
+    tl = _tasklog()
+    started = dt.datetime.now(dt.timezone.utc).isoformat()
+    if tl:
+        try:
+            tl.record_task("stig_scan", run_id_target, "running", started)
+        except Exception:
+            pass
+    try:
+        res = fn(*args, **kwargs)
+    except Exception as exc:
+        if tl:
+            try:
+                tl.record_task("stig_scan", run_id_target, "failed", started,
+                               ended=dt.datetime.now(
+                                   dt.timezone.utc).isoformat(),
+                               details={"error": repr(exc)})
+            except Exception:
+                pass
+        raise
+    if tl:
+        try:
+            counts = (res or {}).get("counts") if isinstance(res, dict) else None
+            tl.record_task("stig_scan", run_id_target, "done", started,
+                           ended=dt.datetime.now(
+                               dt.timezone.utc).isoformat(),
+                           details={"counts": counts or {}})
+        except Exception:
+            pass
+    return res
+
+
+def _smoke() -> int:
+    """Hermetic self-test: synthetic XCCDF results + DS mapping →
+    parse → worst-result merge (dry_run: no evidence writes)."""
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="soc-scanner-smoke-")
+    globals()["SCAN_RESULTS_DIR"] = Path(tmp) / "scans"
+    day = "2026-01-01"
+    daydir = Path(tmp) / "scans" / day
+    daydir.mkdir(parents=True)
+
+    xccdf = (
+        '<?xml version="1.0"?>\n'
+        '<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" '
+        'id="xccdf_org.ssgproject.content_benchmark_UBUNTU_24-04">\n'
+        '  <TestResult>\n'
+        '    <rule-result idref="xccdf_org.ssgproject.content_rule_a">'
+        '<result>{}</result></rule-result>\n'
+        '    <rule-result idref="xccdf_org.ssgproject.content_rule_b">'
+        '<result>pass</result></rule-result>\n'
+        '    <rule-result idref="xccdf_org.ssgproject.content_rule_c">'
+        '<result>notchecked</result></rule-result>\n'
+        '  </TestResult>\n'
+        '</Benchmark>\n')
+    (daydir / "results-host1.xml").write_text(xccdf.format("fail"))
+    (daydir / "results-host2.xml").write_text(xccdf.format("pass"))
+
+    specs = _specs_from_day(day)
+    assert len(specs) == 2, specs
+    assert specs[0]["ds"].endswith("ssg-ubuntu2404-ds.xml"), specs
+
+    merged = merge_results(specs, "example-soc", day, dry_run=True)
+    assert merged["per_host"]["host1"]["fail"] == 1, merged
+    assert merged["merged_rules"] == 2, merged  # c dropped (neutral)
+    assert merged["evidence_counts"] == {}, merged  # dry_run: no writes
+
+    shutil.rmtree(tmp, ignore_errors=True)
+    sys.stdout.write("soc-scanner smoke test: OK\n")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="SOC OpenSCAP compliance scanner")
-    g = ap.add_mutually_exclusive_group(required=True)
+    g = ap.add_mutually_exclusive_group()
     g.add_argument("--host", help="agent name or id (fleet-resolved), "
                    "or any name if --host-ip is given")
     g.add_argument("--fleet", action="store_true",
@@ -614,7 +700,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="print the resolved command and exit")
     ap.add_argument("--json", action="store_true",
                     help="machine-readable output")
+    ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args(argv)
+    if args.smoke:
+        return _smoke()
+    if not (args.host or args.fleet or args.collect):
+        ap.error("one of --host / --fleet / --collect is required")
     day = args.day or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
     tenant = args.tenant or _default_tenant()
 
@@ -640,8 +731,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(json.dumps({"ok": False,
                               "error": "no scannable agents (family resolved)"}))
             return 1
-        return emit(scan_fleet(agents, tenant, day, args.profile,
-                               args.dry_run))
+        return emit(_tasklog_run("fleet", scan_fleet, agents, tenant,
+                                 day, args.profile, args.dry_run))
 
     # single host
     agents = fleet_agents()
@@ -667,8 +758,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         # ubuntu datastream (2404 over 2204) so CPE checks match.
         if (SSG_DIR / "ssg-ubuntu2404-ds.xml").exists():
             row["os_version"] = "24.04"
-    return emit(scan_and_record(row, tenant, day, args.profile,
-                                args.dry_run))
+    return emit(_tasklog_run(args.host, scan_and_record, row, tenant,
+                             day, args.profile, args.dry_run))
 
 
 if __name__ == "__main__":

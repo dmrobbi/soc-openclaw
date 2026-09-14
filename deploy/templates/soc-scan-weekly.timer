@@ -1,0 +1,21 @@
+# systemd timer for the weekly OpenSCAP fleet scan.
+#
+# Sunday 03:00 UTC: results land under ~/.openclaw/soc/scans/<day>/ and
+# the evidence is merged by the scan itself; the next 06:30
+# soc-compliance-daily refresh re-collects + rescores. Runs before the
+# Sunday daily-decisions report (06:00) so the week's compliance
+# picture is fresh everywhere.
+#
+# Install: see soc-scan-weekly.service (rendered by deploy/install.sh,
+# which enables this timer).
+
+[Unit]
+Description=SOC weekly OpenSCAP fleet scan timer (Sunday 03:00 UTC)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00 UTC
+Persistent=true
+Unit=soc-scan-weekly.service
+
+[Install]
+WantedBy=timers.target

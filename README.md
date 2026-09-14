@@ -124,7 +124,7 @@ cd deploy/wazuh-dashboards && python3 build-wazuh-dashboards.py --import && cd .
 
 # 5. Verify
 bash deploy/healthcheck.sh               # ~27 checks, exit 0 = green
-systemctl list-timers 'soc-*'            # daily-decisions 06:00, compliance-daily 06:30, healthcheck hourly
+systemctl list-timers 'soc-*'            # daily-decisions 06:00, compliance-daily 06:30, healthcheck hourly, scan-weekly Sun 03:00
 open http://<host>:8771   # SOC Dashboard
 ```
 
