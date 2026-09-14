@@ -12,7 +12,10 @@ An **agentic Security Operations Center (SOC)** built on two open pieces:
   agent that operates the SOC day to day (fleet scans, service repair,
   dashboards, documentation).
 
-Everything here is deployable as **eight systemd services**, an OpenClaw
+Everything here is deployable as **eight systemd services** plus **three
+maintenance timers** (daily decisions report 06:00 UTC, nightly
+compliance refresh 06:30 UTC, hourly healthcheck with OnFailure
+alerting), an OpenClaw
 sub-agent fleet, and one Wazuh integration script. Stdlib-only Python;
 no vendor lock-in; secrets stay outside the repo.
 
@@ -113,13 +116,15 @@ sudo cp deploy/secrets/*.env.example ...   # see deploy-guide.md
 
 # 3. Install the stack + sub-agent fleet (idempotent)
 cp deploy/soc-stack.env.example deploy/soc-stack.env && ${EDITOR:-vi} deploy/soc-stack.env
+bash scripts/smoke-all.sh          # optional gate: all 7 module smokes
 sudo bash deploy/install.sh
 
 # 4. Stock the Wazuh dashboards (11 dashboards, 56 visualizations)
 cd deploy/wazuh-dashboards && python3 build-wazuh-dashboards.py --import && cd ../..
 
 # 5. Verify
-bash deploy/healthcheck.sh
+bash deploy/healthcheck.sh               # ~27 checks, exit 0 = green
+systemctl list-timers 'soc-*'            # daily-decisions 06:00, compliance-daily 06:30, healthcheck hourly
 open http://<host>:8771   # SOC Dashboard
 ```
 
@@ -132,7 +137,7 @@ silently disables inventory; onboarding explains the required block).
 
 | Path | What it is |
 |---|---|
-| `services/` | The systemd-hosted services: SOC dashboard (8771) + MCP servers (wazuh-mcp 8766, manager-mcp 8767, tickets-mcp 8768, audit-mcp 8769) + realtime ingest (8765) + imap watcher + daily report |
+| `services/` | The systemd-hosted services: SOC dashboard (8771) + MCP servers (wazuh-mcp 8766, manager-mcp 8767, tickets-mcp 8768, audit-mcp 8769) + realtime ingest (8765) + imap watcher + daily report + nightly compliance refresh (`soc_compliance_daily.py`) + STIG remediation (`soc_stig_remediate.py`) |
 | `services/scanner/` | OpenSCAP scanner (CLI + fleet resolver) and the fleet evidence collector (`collect_fleet_day.py`) |
 | `services/soc_evidence.py`, `services/soc_score.py` | Evidence store (SSG 800-53 → CMMC controls) and compliance scoring |
 | `agents/` | The OpenClaw sub-agent fleet: identities + bootstrap |
@@ -160,7 +165,7 @@ editing personas to propagate updates.
 
 - [Deployment guide](docs/deploy-guide.md) — bare host → running SOC
 - [Fleet onboarding](docs/fleet-onboarding.md) — enrolling systems (incl. the required syscollector block)
-- [OpenSCAP scanning](docs/openscap-scanning.md) — compliance scans, evidence, scoring
+- [OpenSCAP scanning](docs/openscap-scanning.md) — compliance scans, evidence, scoring, **remediation** (`soc_scanner.py --collect`, `soc_stig_remediate.py` + dashboard button)
 - [CVE review & packages](docs/cve-packages.md) — per-host CVE findings, package comparison, host diffs
 - [Stocked Wazuh dashboards](docs/wazuh-dashboards.md) — 11 dashboards + one-command reload
 - [Security notes](docs/security-notes.md) — secrets, rotation procedures, exposure posture
