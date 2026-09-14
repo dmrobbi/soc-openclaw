@@ -92,6 +92,7 @@ DASHBOARD_TOOLS = (
     "stig_host_view",
     "fleet_host_view", "run_scan",
     "run_host_compliance_scan",
+    "remediate_control",
     "tasks_list", "task_get",
     "compliance_report", "stig_report", "run_fleet_scan",
     "agent_logs",
@@ -836,6 +837,66 @@ def tool_run_host_compliance_scan(args: Dict[str, Any]) -> Dict[str, Any]:
             "tenants_scanned": tenants}
 
 
+def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
+    """remediate_control(control_id, tenant_id, confidence, dry_run)
+    -> MUTATING.
+
+    E2 STIG auto-remediation for one control (ported 2026-09-14):
+    snapshot current state (read-only check) -> confidence/tenant
+    gate -> apply the catalogue fix command -> verify with the check
+    command. Then re-collect evidence for the tenant (today) and
+    recompute its score so the pass grades immediately.
+
+    Layers of gating, in order:
+      1. C2 /healthz mutations_enabled (SOC_MANAGER_MCP_ALLOW_MUTATIONS)
+         — the same gate as the scan triggers.
+      2. The tenant routing config: `auto_remediate` must be in
+         allowed_actions AND auto_remediation_threshold met AND the
+         severity eligible.
+      3. dry_run (arg or SOC_REMEDIATION_DRY_RUN=1) — no system change.
+    Commands run as the dashboard service user; root-needing fixes
+    fail honestly (rc recorded) — use the CLI under sudo for those.
+    Every apply/rollback writes a snapshot + audit row + remediation
+    log entry (the rows soc_evidence grades into PASS evidence)."""
+    cid = str(args.get("control_id") or "").strip()
+    tid = str(args.get("tenant_id") or "").strip()
+    if not cid or not tid:
+        raise ValueError("control_id and tenant_id are required")
+    c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    mcode, mbody = _http_get(f"{c2}/healthz", timeout=5.0)
+    if mcode != 200 or not isinstance(mbody, dict) \
+            or not mbody.get("mutations_enabled"):
+        return {"ok": False, "tool": "remediate_control",
+                "error": "mutations disabled on C2 manager "
+                         "(SOC_MANAGER_MCP_ALLOW_MUTATIONS)"}
+    if soc_dir not in sys.path:
+        sys.path.insert(0, soc_dir)
+    from soc_stig_remediate import tool_remediate_control as _remediate
+    res = _remediate({"control_id": cid, "tenant_id": tid,
+                      "confidence": args.get("confidence"),
+                      "dry_run": bool(args.get("dry_run"))})
+    out: Dict[str, Any] = {"ok": True, "tool": "remediate_control",
+                           "remediation": res}
+    if res.get("status") == "applied":
+        import datetime as _dt
+        day = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+        try:
+            from soc_evidence import tool_collect_evidence
+            ev = tool_collect_evidence({"tenant_id": tid, "day": day})
+            out["evidence"] = {"total_controls": ev.get("total_controls"),
+                               "counts": ev.get("counts")}
+        except Exception as e:
+            out["evidence"] = {"error": repr(e)}
+        try:
+            from soc_score import tool_compute_score
+            out["score"] = tool_compute_score({"tenant_id": tid,
+                                               "day": day})
+        except Exception as e:
+            out["score"] = {"error": repr(e)}
+    return out
+
+
 def _tasklog():
     """Lazy services/soc_tasklog module (services/ on sys.path)."""
     soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -851,6 +912,7 @@ _TASK_LOGGED_TOOLS = {
     "run_scan": "wazuh_scan",
     "run_host_compliance_scan": "compliance_scan",
     "run_fleet_scan": "compliance_scan",
+    "remediate_control": "stig_remediate",
 }
 
 
@@ -1256,6 +1318,7 @@ class _Handler(BaseHTTPRequestHandler):
             "package_diff": tool_package_diff,
             "run_scan": tool_run_scan_proxy,
             "run_host_compliance_scan": tool_run_host_compliance_scan,
+            "remediate_control": tool_remediate_control,
             "tasks_list": tool_tasks_list,
             "task_get": tool_task_get,
             "compliance_report": tool_compliance_report,
@@ -1276,7 +1339,7 @@ class _Handler(BaseHTTPRequestHandler):
                 _tasklog().record_task(
                     logged_kind,
                     str((args or {}).get("agent_id")
-                        or (args or {}).get("host") or "-"),
+                        or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
                     "running", started_ts)
             except Exception:
                 pass
@@ -1288,7 +1351,7 @@ class _Handler(BaseHTTPRequestHandler):
                     _tasklog().record_task(
                         logged_kind,
                         str((args or {}).get("agent_id")
-                            or (args or {}).get("host") or "-"),
+                            or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
                         "failed", started_ts,
                         ended=__import__("datetime").datetime.now(
                             __import__("datetime").timezone.utc).isoformat(),
@@ -1306,7 +1369,7 @@ class _Handler(BaseHTTPRequestHandler):
                     _tasklog().record_task(
                         logged_kind,
                         str((args or {}).get("agent_id")
-                            or (args or {}).get("host") or "-"),
+                            or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
                         "failed", started_ts,
                         ended=__import__("datetime").datetime.now(
                             __import__("datetime").timezone.utc).isoformat(),
@@ -1322,7 +1385,7 @@ class _Handler(BaseHTTPRequestHandler):
                 _tasklog().record_task(
                     logged_kind,
                     str((args or {}).get("agent_id")
-                        or (args or {}).get("host") or "-"),
+                        or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
                     "done" if result.get("ok") else "failed",
                     started_ts,
                     ended=__import__("datetime").datetime.now(

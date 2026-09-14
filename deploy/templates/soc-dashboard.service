@@ -73,7 +73,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+# 2026-09-14: the compliance stores live under /home — without these
+# the dashboard cannot write evidence/snapshots/remediation log/audit
+# rows (EROFS was silently swallowed by try/except in some paths).
 ReadWritePaths=/opt/soc-openclaw
+ReadWritePaths=/home/__SOC_USER__/.openclaw/soc
+ReadWritePaths=/home/__SOC_USER__/.openclaw/compliance
+ReadWritePaths=/home/__SOC_USER__/.openclaw-wazuh
 
 [Install]
 WantedBy=multi-user.target
