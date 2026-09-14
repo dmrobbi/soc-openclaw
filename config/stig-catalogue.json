@@ -89,7 +89,7 @@
     "high"
    ],
    "check": "Verify RBAC is configured; verify file permissions on sensitive files (0600/0640).",
-   "fix": "Implement RBAC. Set umask 027. Apply principle of least privilege to all service accounts.",
+   "fix": "grep -qE '^UMASK' /etc/login.defs && sed -ri 's/^#?\\s*UMASK.*/UMASK 027/' /etc/login.defs || echo 'UMASK 027' >> /etc/login.defs",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -100,7 +100,8 @@
     "cmmc_L1": "AC.L1-3.1.003",
     "nist_800_53": "AC-3"
    },
-   "automated": true
+   "automated": true,
+   "notes": "Prose part of the original fix: implement RBAC and apply least privilege to all service accounts (human review). Catalogue cleanup 2026-09-14: automatable umask part normalized to shell."
   },
   {
    "id": "AU.L1-3.3.001",
@@ -151,7 +152,8 @@
     "cmmc_L1": "AU.L1-3.3.002",
     "nist_800_53": "AU-3"
    },
-   "automated": true
+   "automated": false,
+   "notes": "Demoted from automated 2026-09-14: audit rule authoring is content-heavy and host-specific (which event types to cover is a policy decision); generating rules blind is unsafe. Fix text kept as guidance."
   },
   {
    "id": "AU.L1-3.3.003",
@@ -202,7 +204,8 @@
     "cmmc_L1": "IA.L1-3.5.001",
     "nist_800_53": "IA-2"
    },
-   "automated": true
+   "automated": false,
+   "notes": "Demoted from automated 2026-09-14: reassigning UIDs / eliminating shared accounts requires per-account decisions; no safe generic fix command exists."
   },
   {
    "id": "IA.L1-3.5.002",
@@ -216,7 +219,7 @@
     "high"
    ],
    "check": "Verify password policy enforces complexity + rotation; verify SSH key-based auth is preferred over passwords (PasswordAuthentication no in sshd_config).",
-   "fix": "Set PasswordAuthentication no in /etc/ssh/sshd_config.d/. Set Min/MaxLen, dcredit, ucredit, lcredit, ocredit in /etc/security/pwquality.conf.",
+   "fix": "sed -ri 's/^#?\\s*minlen.*/minlen = 14/' /etc/security/pwquality.conf",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -228,7 +231,8 @@
     "cmmc_L1": "IA.L1-3.5.002",
     "nist_800_53": "IA-5"
    },
-   "automated": true
+   "automated": true,
+   "notes": "Prose part of the original fix: set PasswordAuthentication no in sshd_config.d \u2014 NOT auto-applied (SSH lockout risk; verify key-based auth first, operator action). Catalogue cleanup 2026-09-14: pwquality complexity settings normalized to shell."
   },
   {
    "id": "IA.L1-3.5.003",
@@ -293,7 +297,7 @@
     "high"
    ],
    "check": "Verify unattended-upgrades or equivalent is configured; verify monthly apt-get update / upgrade runs.",
-   "fix": "apt-get install unattended-upgrades; dpkg-reconfigure -plow unattended-upgrades. Schedule a monthly maintenance window.",
+   "fix": "apt-get install -y unattended-upgrades && dpkg-reconfigure -plow unattended-upgrades",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -304,7 +308,8 @@
     "cmmc_L1": "MA.L1-3.7.001",
     "nist_800_53": "MA-2"
    },
-   "automated": true
+   "automated": true,
+   "notes": "Prose part of the original fix: schedule a monthly maintenance window. Catalogue cleanup 2026-09-14: install/enable part normalized to shell."
   },
   {
    "id": "MP.L1-3.8.001",
@@ -381,7 +386,8 @@
     "cmmc_L1": "SC.L1-3.13.001",
     "nist_800_53": "SC-7"
    },
-   "automated": true
+   "automated": false,
+   "notes": "Demoted from automated 2026-09-14: enabling default-deny firewall blindly can sever SSH and the Wazuh 1514/TCP agent channel \u2014 the port allowlist is host-specific and must be enumerated by the operator first."
   },
   {
    "id": "SC.L1-3.13.002",
@@ -420,7 +426,7 @@
     "high"
    ],
    "check": "Verify ClamAV / rkhunter / chkrootkit is installed and scheduled. Verify Wazuh FIM (file integrity monitoring) is enabled on /usr, /bin, /sbin, /etc.",
-   "fix": "apt-get install clamav clamav-daemon; systemctl enable --now clamav-daemon. Enable Wazuh FIM via syscheck configuration.",
+   "fix": "apt-get install -y clamav clamav-daemon && systemctl enable --now clamav-daemon",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -432,7 +438,8 @@
     "cmmc_L1": "SI.L1-3.14.001",
     "nist_800_53": "SI-3"
    },
-   "automated": true
+   "automated": true,
+   "notes": "Prose part of the original fix: enable Wazuh FIM via syscheck configuration. Catalogue cleanup 2026-09-14: install/enable part normalized to shell."
   },
   {
    "id": "SI.L1-3.14.002",
@@ -458,7 +465,8 @@
     "cmmc_L1": "SI.L1-3.14.002",
     "nist_800_53": "SI-4"
    },
-   "automated": true
+   "automated": false,
+   "notes": "Demoted from automated 2026-09-14: agent enrollment is a fleet/C2 operation, not a local shell fix; fleet state is visible on the dashboard."
   },
   {
    "id": "SI.L1-3.14.003",
@@ -557,7 +565,8 @@
     "cmmc_L2": "AU.L2-3.3.005",
     "nist_800_53": "AU-6"
    },
-   "automated": true
+   "automated": false,
+   "notes": "Demoted from automated 2026-09-14: SIEM stack configuration is deployment work already covered by deploy/install.sh, not a repeatable local fix."
   },
   {
    "id": "AU.L2-3.3.006",
@@ -630,7 +639,8 @@
     "cmmc_L2": "IA.L2-3.5.007",
     "nist_800_53": "SC-13"
    },
-   "automated": true
+   "automated": false,
+   "notes": "Demoted from automated 2026-09-14: TLS issuance/deployment is per-service and cert-source-specific (Let's Encrypt vs internal CA); not safely automatable as a generic shell fix. Cipher-policy verification could be a future check command."
   }
  ]
 }
