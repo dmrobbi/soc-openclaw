@@ -1,0 +1,37 @@
+# systemd unit for the SOC hourly healthcheck.
+#
+# Runs deploy/healthcheck.sh (units, ports, fleet, sub-agents, secrets
+# perms). Exit 0 = all green. On failure, systemd starts
+# soc-healthcheck-alert@soc-healthcheck.service (OnFailure below),
+# which notifies the operator (OpenClaw chat, SMTP fallback).
+#
+# Runs as __SOC_USER__ (wez): the sub-agent check shells out to the
+# openclaw CLI, which is NOT on root's PATH (2026-09-13 lesson), and
+# the secret files it stats are wez-owned.
+#
+# Install: rendered from deploy/templates by deploy/install.sh; fired
+# hourly by soc-healthcheck.timer.
+
+[Unit]
+Description=SOC hourly healthcheck (deploy/healthcheck.sh)
+Documentation=file:///opt/soc-openclaw/deploy/healthcheck.sh
+After=network-online.target
+Wants=network-online.target
+OnFailure=soc-healthcheck-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__SOC_USER__
+Group=__SOC_USER__
+Environment="PATH=/home/__SOC_USER__/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="OPENCLAW_BIN=/home/__SOC_USER__/.npm-global/bin/openclaw"
+Environment="SOC_MAILBOX_ENV=/home/__SOC_USER__/.openclaw/workspace/secrets/reports-bedimsecurity-mailbox.env"
+ExecStart=/opt/soc-openclaw/deploy/healthcheck.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-healthcheck
+TimeoutStartSec=300
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
