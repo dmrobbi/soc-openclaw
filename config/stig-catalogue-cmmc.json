@@ -1,415 +1,636 @@
 {
-  "_meta": {
-    "name": "CMMC L1/L2 hand-curated seed (24 controls)",
-    "version": "1.0",
-    "last_updated": "2026-08-08",
-    "source_documents": [
-      "docs/security/cmmc-compliance-roadmap.md (mail.example.com 2026-03-08)"
-    ],
-    "design_notes": [
-      "Hand-curated seed catalogue. The contract is what the SOC fleet",
-      "depends on; plug in the real DISA STIG XCCDF later without",
-      "changing the tool surface (see soc_stig.py README).",
-      "",
-      "Each control maps to one CMMC practice ID (the primary key)",
-      "with a NIST 800-53 cross-reference where applicable. The",
-      "`baselines` field is the NIST 800-53 baselines the control",
-      "appears in; for CMMC-pure controls (no NIST equivalent), we",
-      "use 'low' as a placeholder baseline so the loader accepts them.",
-      "",
-      "Severity is the SOC's risk rating (low/medium/high), not the",
-      "CMMC practice level. The CMMC practice level (L1 vs L2) is",
-      "preserved in `tags`.",
-      "",
-      "`automated` is whether E2 (auto-remediation) can apply the",
-      "fix programmatically. Manual controls (planning, policy) are",
-      "false; technical controls (file perms, kernel params) are true."
-    ]
-  },
-  "controls": [
-    {
-      "id": "AC.L1-3.1.001",
-      "family": "AC",
-      "title": "Access Control Policy",
-      "description": "Limit information system access to authorized users, processes acting on behalf of authorized users, or devices (including other information systems).",
-      "severity": "medium",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify that an access control policy is documented and approved.",
-      "fix": "Document the access control policy. Review quarterly.",
-      "tags": ["cmmc", "cmmc-L1", "policy", "access-control"],
-      "references": {
-        "cmmc_L1": "AC.L1-3.1.001",
-        "nist_800_53": "AC-1"
-      },
-      "automated": false
-    },
-    {
-      "id": "AC.L1-3.1.002",
-      "family": "AC",
-      "title": "Account Management",
-      "description": "Identify and select the following types of information system accounts: organizational accounts; or user accounts. Specify authorized users of the information system, group and role membership, and access authorizations.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "grep -E '/bin/bash|/bin/sh' /etc/passwd  # review shell users; verify each has a documented owner.",
-      "fix": "Create account management procedure; document creation/approval/termination workflow; maintain access roster.",
-      "tags": ["cmmc", "cmmc-L1", "access-control", "account-management"],
-      "references": {
-        "cmmc_L1": "AC.L1-3.1.002",
-        "nist_800_53": "AC-2"
-      },
-      "automated": false
-    },
-    {
-      "id": "AC.L1-3.1.003",
-      "family": "AC",
-      "title": "Access Enforcement",
-      "description": "Enforce approved authorizations for logical access in accordance with applicable policies and regulations.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify RBAC is configured; verify file permissions on sensitive files (0600/0640).",
-      "fix": "Implement RBAC. Set umask 027. Apply principle of least privilege to all service accounts.",
-      "tags": ["cmmc", "cmmc-L1", "access-control", "rbac"],
-      "references": {
-        "cmmc_L1": "AC.L1-3.1.003",
-        "nist_800_53": "AC-3"
-      },
-      "automated": true
-    },
-    {
-      "id": "AU.L1-3.3.001",
-      "family": "AU",
-      "title": "Audit Events",
-      "description": "Create, retain, and protect information system audit records to the extent needed to enable the monitoring, analysis, investigation, and reporting of unlawful, unauthorized, or inappropriate information system activity.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "systemctl is-active auditd   # or wazuh-manager container running and ingesting syslog/auth.log",
-      "fix": "Install auditd (apt-get install auditd; systemctl enable --now auditd) or ensure Wazuh is ingesting /var/log/auth.log and /var/log/syslog.",
-      "tags": ["cmmc", "cmmc-L1", "audit", "logging"],
-      "references": {
-        "cmmc_L1": "AU.L1-3.3.001",
-        "nist_800_53": "AU-2"
-      },
-      "automated": true
-    },
-    {
-      "id": "AU.L1-3.3.002",
-      "family": "AU",
-      "title": "Audit Content",
-      "description": "Ensure that the information system generates audit records containing information that establishes what type of event occurred, when the event occurred, where the event occurred, the source of the event, the outcome of the event, and the identity of any user, subject, or object associated with the event.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify audit records contain the required fields: type, time, location, source, outcome, identity. (Wazuh alert JSON has all of these.)",
-      "fix": "If using auditd: ensure rules in /etc/audit/rules.d/ cover the required event types. If using Wazuh: ensure decoders + rules are kept current.",
-      "tags": ["cmmc", "cmmc-L1", "audit", "wazuh"],
-      "references": {
-        "cmmc_L1": "AU.L1-3.3.002",
-        "nist_800_53": "AU-3"
-      },
-      "automated": true
-    },
-    {
-      "id": "AU.L1-3.3.003",
-      "family": "AU",
-      "title": "Protect Audit Information",
-      "description": "Protect audit information and audit tools from unauthorized access, modification, and deletion.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "ls -la /var/log/audit/   # verify 0600 or 0640, owned by root; verify audit logs are forwarded off-host (Wazuh manager / SIEM).",
-      "fix": "chmod 0600 /var/log/audit/*.log; chown root:root /var/log/audit/. Configure off-host log shipping (rsyslog, filebeat, or Wazuh agent).",
-      "tags": ["cmmc", "cmmc-L1", "audit", "log-protection"],
-      "references": {
-        "cmmc_L1": "AU.L1-3.3.003",
-        "nist_800_53": "AU-9"
-      },
-      "automated": true
-    },
-    {
-      "id": "IA.L1-3.5.001",
-      "family": "IA",
-      "title": "Identify Users",
-      "description": "Identify information system users, processes acting on behalf of users, or devices.",
-      "severity": "medium",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify each user has a unique UID; verify shared accounts are not used (grep for duplicate UIDs in /etc/passwd).",
-      "fix": "Assign unique UIDs to every user; eliminate shared accounts; use sudo for privilege escalation.",
-      "tags": ["cmmc", "cmmc-L1", "authentication", "user-id"],
-      "references": {
-        "cmmc_L1": "IA.L1-3.5.001",
-        "nist_800_53": "IA-2"
-      },
-      "automated": true
-    },
-    {
-      "id": "IA.L1-3.5.002",
-      "family": "IA",
-      "title": "Authentication Mechanisms",
-      "description": "Authenticate (or verify) the identities of users, processes, or devices as a prerequisite to allowing access to organizational information systems.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify password policy enforces complexity + rotation; verify SSH key-based auth is preferred over passwords (PasswordAuthentication no in sshd_config).",
-      "fix": "Set PasswordAuthentication no in /etc/ssh/sshd_config.d/. Set Min/MaxLen, dcredit, ucredit, lcredit, ocredit in /etc/security/pwquality.conf.",
-      "tags": ["cmmc", "cmmc-L1", "authentication", "ssh", "passwords"],
-      "references": {
-        "cmmc_L1": "IA.L1-3.5.002",
-        "nist_800_53": "IA-5"
-      },
-      "automated": true
-    },
-    {
-      "id": "IA.L1-3.5.003",
-      "family": "IA",
-      "title": "Multi-Factor Authentication",
-      "description": "Use multifactor authentication for local and network access to privileged accounts and for network access to non-privileged accounts.",
-      "severity": "high",
-      "baselines": ["moderate", "high"],
-      "check": "Verify MFA is required for sudo / root / privileged accounts. (CMMC L1 permits password-only for non-privileged; L2 requires MFA for privileged.)",
-      "fix": "Configure MFA via PAM (pam_google_authenticator, libpam-oath) or vendor-specific (Duo, Okta, etc.). Required for L2 compliance.",
-      "tags": ["cmmc", "cmmc-L1", "mfa", "authentication", "privileged"],
-      "references": {
-        "cmmc_L1": "IA.L1-3.5.003",
-        "cmmc_L2": "IA.L2-3.5.003",
-        "nist_800_53": "IA-2(1)"
-      },
-      "automated": false
-    },
-    {
-      "id": "IR.L1-3.6.001",
-      "family": "IR",
-      "title": "Incident Response Plan",
-      "description": "Develop an incident response plan that provides the organization with a roadmap for implementing its incident response capability.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify a written incident response plan exists; verify it includes roles, communication, escalation, and post-incident review.",
-      "fix": "Document the IR plan. Test annually via tabletop exercise. Reference: NIST SP 800-61.",
-      "tags": ["cmmc", "cmmc-L1", "incident-response", "policy"],
-      "references": {
-        "cmmc_L1": "IR.L1-3.6.001",
-        "nist_800_53": "IR-1"
-      },
-      "automated": false
-    },
-    {
-      "id": "MA.L1-3.7.001",
-      "family": "MA",
-      "title": "Maintenance",
-      "description": "Perform maintenance on organizational information systems.",
-      "severity": "low",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify unattended-upgrades or equivalent is configured; verify monthly apt-get update / upgrade runs.",
-      "fix": "apt-get install unattended-upgrades; dpkg-reconfigure -plow unattended-upgrades. Schedule a monthly maintenance window.",
-      "tags": ["cmmc", "cmmc-L1", "maintenance", "patching"],
-      "references": {
-        "cmmc_L1": "MA.L1-3.7.001",
-        "nist_800_53": "MA-2"
-      },
-      "automated": true
-    },
-    {
-      "id": "MP.L1-3.8.001",
-      "family": "MP",
-      "title": "Media Protection",
-      "description": "Protect information system media (paper and digital) both at rest and in transit.",
-      "severity": "medium",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify backup media is encrypted (LUKS or equivalent); verify transit procedures exist for moving media off-site.",
-      "fix": "Configure LUKS on backup volumes. Document the transit chain-of-custody. Encrypt USB drives with cryptsetup.",
-      "tags": ["cmmc", "cmmc-L1", "media", "encryption", "backup"],
-      "references": {
-        "cmmc_L1": "MP.L1-3.8.001",
-        "nist_800_53": "MP-4"
-      },
-      "automated": false
-    },
-    {
-      "id": "PE.L1-3.10.001",
-      "family": "PE",
-      "title": "Physical Access",
-      "description": "Limit physical access to information systems, equipment, and the respective operating environments to authorized individuals.",
-      "severity": "medium",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify the data center has controlled physical access (badge / biometric / staffed reception).",
-      "fix": "Document the physical access control procedure. Maintain visitor log. Quarterly review of badge access list.",
-      "tags": ["cmmc", "cmmc-L1", "physical", "datacenter"],
-      "references": {
-        "cmmc_L1": "PE.L1-3.10.001",
-        "nist_800_53": "PE-2"
-      },
-      "automated": false
-    },
-    {
-      "id": "SC.L1-3.13.001",
-      "family": "SC",
-      "title": "System and Communications Protection",
-      "description": "Monitor and control communications at the external boundary and key internal boundaries of the information system.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify firewall (ufw / nftables / iptables) is active and default-deny on inbound. Verify only required ports are open (ss -tlnp).",
-      "fix": "ufw default deny incoming; ufw default allow outgoing. Open only 22, 80, 443, plus application-specific ports.",
-      "tags": ["cmmc", "cmmc-L1", "boundary", "firewall", "network"],
-      "references": {
-        "cmmc_L1": "SC.L1-3.13.001",
-        "nist_800_53": "SC-7"
-      },
-      "automated": true
-    },
-    {
-      "id": "SC.L1-3.13.002",
-      "family": "SC",
-      "title": "Boundary Protection",
-      "description": "Implement subnetworks for publicly accessible system components that are physically or logically separated from internal networks.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify DMZ exists for public-facing services; verify internal services are not directly internet-reachable.",
-      "fix": "Document the network segmentation. Verify the public mail host is in the DMZ; the Wazuh manager + audit log storage are internal-only.",
-      "tags": ["cmmc", "cmmc-L1", "dmz", "network-segmentation"],
-      "references": {
-        "cmmc_L1": "SC.L1-3.13.002",
-        "nist_800_53": "SC-7"
-      },
-      "automated": false
-    },
-    {
-      "id": "SI.L1-3.14.001",
-      "family": "SI",
-      "title": "Malicious Code Protection",
-      "description": "Implement malicious code protection mechanisms at information system entry and exit points.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify ClamAV / rkhunter / chkrootkit is installed and scheduled. Verify Wazuh FIM (file integrity monitoring) is enabled on /usr, /bin, /sbin, /etc.",
-      "fix": "apt-get install clamav clamav-daemon; systemctl enable --now clamav-daemon. Enable Wazuh FIM via syscheck configuration.",
-      "tags": ["cmmc", "cmmc-L1", "antivirus", "fim", "malware"],
-      "references": {
-        "cmmc_L1": "SI.L1-3.14.001",
-        "nist_800_53": "SI-3"
-      },
-      "automated": true
-    },
-    {
-      "id": "SI.L1-3.14.002",
-      "family": "SI",
-      "title": "Monitoring and Detection",
-      "description": "Monitor information systems for attacks and indicators of potential attacks.",
-      "severity": "high",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify Wazuh manager + agents are active. Verify at least one detection rule is enabled that fires for the test scenario (SSH brute force from 9.9.9.9).",
-      "fix": "Ensure Wazuh agents are enrolled (id 000/002/...). Verify rule sets are current: /var/ossec/etc/ossec.conf has <syscheck> + <rootcheck> enabled.",
-      "tags": ["cmmc", "cmmc-L1", "monitoring", "detection", "wazuh"],
-      "references": {
-        "cmmc_L1": "SI.L1-3.14.002",
-        "nist_800_53": "SI-4"
-      },
-      "automated": true
-    },
-    {
-      "id": "SI.L1-3.14.003",
-      "family": "SI",
-      "title": "Spam Protection",
-      "description": "Implement spam protection mechanisms at information system entry points.",
-      "severity": "medium",
-      "baselines": ["low", "moderate", "high"],
-      "check": "Verify Postfix has spam filtering enabled (Rspamd, SpamAssassin, or Amavis). Verify DKIM/SPF/DMARC records are published for the sending domain.",
-      "fix": "apt-get install rspamd; configure Postfix to use Rspamd as a milter. Add SPF + DKIM + DMARC DNS records.",
-      "tags": ["cmmc", "cmmc-L1", "spam", "email", "postfix"],
-      "references": {
-        "cmmc_L1": "SI.L1-3.14.003",
-        "nist_800_53": "SI-8"
-      },
-      "automated": false
-    },
-    {
-      "id": "AC.L2-3.1.005",
-      "family": "AC",
-      "title": "Network Access Control (L2)",
-      "description": "Employ the principle of least privilege, including for specific security functions and privileged accounts.",
-      "severity": "high",
-      "baselines": ["moderate", "high"],
-      "check": "Verify network segmentation; verify privileged accounts have minimum required access; verify ACLs on internal subnets.",
-      "fix": "Implement nftables ACLs. Reduce sudoers to the minimum required. Separate management network from data plane.",
-      "tags": ["cmmc", "cmmc-L2", "least-privilege", "network", "acl"],
-      "references": {
-        "cmmc_L2": "AC.L2-3.1.005",
-        "nist_800_53": "AC-6"
-      },
-      "automated": false
-    },
-    {
-      "id": "AC.L2-3.1.007",
-      "family": "AC",
-      "title": "Network Access Control (segmentation)",
-      "description": "Limit network access to specific types of information system components (e.g., DMZ, internal subnets).",
-      "severity": "medium",
-      "baselines": ["moderate", "high"],
-      "check": "Verify network segmentation via nftables / VLAN / cloud security groups. Verify the public mail host is in the DMZ; the Wazuh manager + audit log storage are internal-only.",
-      "fix": "Document the segmentation. Verify internal services are not directly internet-reachable.",
-      "tags": ["cmmc", "cmmc-L2", "segmentation", "dmz"],
-      "references": {
-        "cmmc_L2": "AC.L2-3.1.007"
-      },
-      "automated": false
-    },
-    {
-      "id": "AU.L2-3.3.005",
-      "family": "AU",
-      "title": "Correlation (SIEM)",
-      "description": "Correlate information from audit records with information obtained from monitoring physical access, monitoring network activity, and other monitoring activities to further enhance the ability to identify unauthorized activities.",
-      "severity": "high",
-      "baselines": ["moderate", "high"],
-      "check": "Verify Wazuh SIEM is receiving logs from all systems in the scope. Verify a correlation rule fires when the same source IP triggers >=3 rules within 5 minutes.",
-      "fix": "Configure Wazuh manager + indexer + dashboard. Add a custom rule for brute-force correlation. Verify the indexer is at port 9200 and reachable.",
-      "tags": ["cmmc", "cmmc-L2", "siem", "correlation", "wazuh"],
-      "references": {
-        "cmmc_L2": "AU.L2-3.3.005",
-        "nist_800_53": "AU-6"
-      },
-      "automated": true
-    },
-    {
-      "id": "AU.L2-3.3.006",
-      "family": "AU",
-      "title": "Audit Retention (1 year)",
-      "description": "Retain audit records for at least one year to provide support for after-the-fact investigations of security incidents.",
-      "severity": "medium",
-      "baselines": ["moderate", "high"],
-      "check": "Verify Wazuh indexer retention is set to >= 365 days; verify off-host backup of audit logs.",
-      "fix": "Edit /etc/wazuh-indexer/opensearch.yml: 'indices.query.bool.max_clause_count: 1024' and configure ISM policy for 365-day retention. Backup /var/ossec/logs/archives/ to off-host storage.",
-      "tags": ["cmmc", "cmmc-L2", "retention", "backup", "audit"],
-      "references": {
-        "cmmc_L2": "AU.L2-3.3.006",
-        "nist_800_53": "AU-11"
-      },
-      "automated": false
-    },
-    {
-      "id": "IA.L2-3.5.005",
-      "family": "IA",
-      "title": "Authenticator Management",
-      "description": "Manage authenticators (passwords, keys, certificates) including initial distribution, lost/compromised, and revocation.",
-      "severity": "high",
-      "baselines": ["moderate", "high"],
-      "check": "Verify documented key/credential lifecycle procedure; verify revocation list is current; verify SSH keys are rotated annually.",
-      "fix": "Document the authenticator management procedure. Rotate SSH keys annually. Maintain a CRL for any internal CA.",
-      "tags": ["cmmc", "cmmc-L2", "credentials", "key-management"],
-      "references": {
-        "cmmc_L2": "IA.L2-3.5.005",
-        "nist_800_53": "IA-5"
-      },
-      "automated": false
-    },
-    {
-      "id": "IA.L2-3.5.007",
-      "family": "IA",
-      "title": "Cryptographic Protection",
-      "description": "Establish and manage cryptographic keys for cryptographic protection of information.",
-      "severity": "high",
-      "baselines": ["moderate", "high"],
-      "check": "Verify TLS is configured for all network-exposed services (mail, GitLab, Wazuh dashboard). Verify cipher suites are >= TLS 1.2 + AEAD.",
-      "fix": "Configure TLS 1.2+ across the fleet. Use Mozilla's 'modern' or 'intermediate' cipher list. Verify certs are from a trusted CA or the internal CA is documented.",
-      "tags": ["cmmc", "cmmc-L2", "tls", "cryptography"],
-      "references": {
-        "cmmc_L2": "IA.L2-3.5.007",
-        "nist_800_53": "SC-13"
-      },
-      "automated": true
-    }
+ "_meta": {
+  "name": "CMMC L1/L2 hand-curated seed (24 controls)",
+  "version": "1.0",
+  "last_updated": "2026-08-08",
+  "source_documents": [
+   "docs/security/cmmc-compliance-roadmap.md (mail.example.com 2026-03-08)"
+  ],
+  "design_notes": [
+   "Hand-curated seed catalogue. The contract is what the SOC fleet",
+   "depends on; plug in the real DISA STIG XCCDF later without",
+   "changing the tool surface (see soc_stig.py README).",
+   "",
+   "Each control maps to one CMMC practice ID (the primary key)",
+   "with a NIST 800-53 cross-reference where applicable. The",
+   "`baselines` field is the NIST 800-53 baselines the control",
+   "appears in; for CMMC-pure controls (no NIST equivalent), we",
+   "use 'low' as a placeholder baseline so the loader accepts them.",
+   "",
+   "Severity is the SOC's risk rating (low/medium/high), not the",
+   "CMMC practice level. The CMMC practice level (L1 vs L2) is",
+   "preserved in `tags`.",
+   "",
+   "`automated` is whether E2 (auto-remediation) can apply the",
+   "fix programmatically. Manual controls (planning, policy) are",
+   "false; technical controls (file perms, kernel params) are true."
   ]
+ },
+ "controls": [
+  {
+   "id": "AC.L1-3.1.001",
+   "family": "AC",
+   "title": "Access Control Policy",
+   "description": "Limit information system access to authorized users, processes acting on behalf of authorized users, or devices (including other information systems).",
+   "severity": "medium",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify that an access control policy is documented and approved.",
+   "fix": "Document the access control policy. Review quarterly.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "policy",
+    "access-control"
+   ],
+   "references": {
+    "cmmc_L1": "AC.L1-3.1.001",
+    "nist_800_53": "AC-1"
+   },
+   "automated": false
+  },
+  {
+   "id": "AC.L1-3.1.002",
+   "family": "AC",
+   "title": "Account Management",
+   "description": "Identify and select the following types of information system accounts: organizational accounts; or user accounts. Specify authorized users of the information system, group and role membership, and access authorizations.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "grep -E '/bin/bash|/bin/sh' /etc/passwd  # review shell users; verify each has a documented owner.",
+   "fix": "Create account management procedure; document creation/approval/termination workflow; maintain access roster.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "access-control",
+    "account-management"
+   ],
+   "references": {
+    "cmmc_L1": "AC.L1-3.1.002",
+    "nist_800_53": "AC-2"
+   },
+   "automated": false
+  },
+  {
+   "id": "AC.L1-3.1.003",
+   "family": "AC",
+   "title": "Access Enforcement",
+   "description": "Enforce approved authorizations for logical access in accordance with applicable policies and regulations.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify RBAC is configured; verify file permissions on sensitive files (0600/0640).",
+   "fix": "Implement RBAC. Set umask 027. Apply principle of least privilege to all service accounts.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "access-control",
+    "rbac"
+   ],
+   "references": {
+    "cmmc_L1": "AC.L1-3.1.003",
+    "nist_800_53": "AC-3"
+   },
+   "automated": true
+  },
+  {
+   "id": "AU.L1-3.3.001",
+   "family": "AU",
+   "title": "Audit Events",
+   "description": "Create, retain, and protect information system audit records to the extent needed to enable the monitoring, analysis, investigation, and reporting of unlawful, unauthorized, or inappropriate information system activity.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "systemctl is-active auditd   # or wazuh-manager container running and ingesting syslog/auth.log",
+   "fix": "apt-get install -y auditd && systemctl enable --now auditd",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "audit",
+    "logging"
+   ],
+   "references": {
+    "cmmc_L1": "AU.L1-3.3.001",
+    "nist_800_53": "AU-2"
+   },
+   "automated": true,
+   "notes": "Prose part of the original fix: ensure Wazuh is ingesting /var/log/auth.log and /var/log/syslog (log shipping). Catalogue cleanup 2026-09-14: fix normalized to a pure shell command."
+  },
+  {
+   "id": "AU.L1-3.3.002",
+   "family": "AU",
+   "title": "Audit Content",
+   "description": "Ensure that the information system generates audit records containing information that establishes what type of event occurred, when the event occurred, where the event occurred, the source of the event, the outcome of the event, and the identity of any user, subject, or object associated with the event.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify audit records contain the required fields: type, time, location, source, outcome, identity. (Wazuh alert JSON has all of these.)",
+   "fix": "If using auditd: ensure rules in /etc/audit/rules.d/ cover the required event types. If using Wazuh: ensure decoders + rules are kept current.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "audit",
+    "wazuh"
+   ],
+   "references": {
+    "cmmc_L1": "AU.L1-3.3.002",
+    "nist_800_53": "AU-3"
+   },
+   "automated": true
+  },
+  {
+   "id": "AU.L1-3.3.003",
+   "family": "AU",
+   "title": "Protect Audit Information",
+   "description": "Protect audit information and audit tools from unauthorized access, modification, and deletion.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "ls -la /var/log/audit/   # verify 0600 or 0640, owned by root; verify audit logs are forwarded off-host (Wazuh manager / SIEM).",
+   "fix": "chmod 0600 /var/log/audit/*.log 2>/dev/null; chown root:root /var/log/audit",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "audit",
+    "log-protection"
+   ],
+   "references": {
+    "cmmc_L1": "AU.L1-3.3.003",
+    "nist_800_53": "AU-9"
+   },
+   "automated": true,
+   "notes": "Prose part of the original fix: configure off-host log shipping (rsyslog, filebeat, or Wazuh agent). Catalogue cleanup 2026-09-14: fix normalized to a pure shell command."
+  },
+  {
+   "id": "IA.L1-3.5.001",
+   "family": "IA",
+   "title": "Identify Users",
+   "description": "Identify information system users, processes acting on behalf of users, or devices.",
+   "severity": "medium",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify each user has a unique UID; verify shared accounts are not used (grep for duplicate UIDs in /etc/passwd).",
+   "fix": "Assign unique UIDs to every user; eliminate shared accounts; use sudo for privilege escalation.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "authentication",
+    "user-id"
+   ],
+   "references": {
+    "cmmc_L1": "IA.L1-3.5.001",
+    "nist_800_53": "IA-2"
+   },
+   "automated": true
+  },
+  {
+   "id": "IA.L1-3.5.002",
+   "family": "IA",
+   "title": "Authentication Mechanisms",
+   "description": "Authenticate (or verify) the identities of users, processes, or devices as a prerequisite to allowing access to organizational information systems.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify password policy enforces complexity + rotation; verify SSH key-based auth is preferred over passwords (PasswordAuthentication no in sshd_config).",
+   "fix": "Set PasswordAuthentication no in /etc/ssh/sshd_config.d/. Set Min/MaxLen, dcredit, ucredit, lcredit, ocredit in /etc/security/pwquality.conf.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "authentication",
+    "ssh",
+    "passwords"
+   ],
+   "references": {
+    "cmmc_L1": "IA.L1-3.5.002",
+    "nist_800_53": "IA-5"
+   },
+   "automated": true
+  },
+  {
+   "id": "IA.L1-3.5.003",
+   "family": "IA",
+   "title": "Multi-Factor Authentication",
+   "description": "Use multifactor authentication for local and network access to privileged accounts and for network access to non-privileged accounts.",
+   "severity": "high",
+   "baselines": [
+    "moderate",
+    "high"
+   ],
+   "check": "Verify MFA is required for sudo / root / privileged accounts. (CMMC L1 permits password-only for non-privileged; L2 requires MFA for privileged.)",
+   "fix": "Configure MFA via PAM (pam_google_authenticator, libpam-oath) or vendor-specific (Duo, Okta, etc.). Required for L2 compliance.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "mfa",
+    "authentication",
+    "privileged"
+   ],
+   "references": {
+    "cmmc_L1": "IA.L1-3.5.003",
+    "cmmc_L2": "IA.L2-3.5.003",
+    "nist_800_53": "IA-2(1)"
+   },
+   "automated": false
+  },
+  {
+   "id": "IR.L1-3.6.001",
+   "family": "IR",
+   "title": "Incident Response Plan",
+   "description": "Develop an incident response plan that provides the organization with a roadmap for implementing its incident response capability.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify a written incident response plan exists; verify it includes roles, communication, escalation, and post-incident review.",
+   "fix": "Document the IR plan. Test annually via tabletop exercise. Reference: NIST SP 800-61.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "incident-response",
+    "policy"
+   ],
+   "references": {
+    "cmmc_L1": "IR.L1-3.6.001",
+    "nist_800_53": "IR-1"
+   },
+   "automated": false
+  },
+  {
+   "id": "MA.L1-3.7.001",
+   "family": "MA",
+   "title": "Maintenance",
+   "description": "Perform maintenance on organizational information systems.",
+   "severity": "low",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify unattended-upgrades or equivalent is configured; verify monthly apt-get update / upgrade runs.",
+   "fix": "apt-get install unattended-upgrades; dpkg-reconfigure -plow unattended-upgrades. Schedule a monthly maintenance window.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "maintenance",
+    "patching"
+   ],
+   "references": {
+    "cmmc_L1": "MA.L1-3.7.001",
+    "nist_800_53": "MA-2"
+   },
+   "automated": true
+  },
+  {
+   "id": "MP.L1-3.8.001",
+   "family": "MP",
+   "title": "Media Protection",
+   "description": "Protect information system media (paper and digital) both at rest and in transit.",
+   "severity": "medium",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify backup media is encrypted (LUKS or equivalent); verify transit procedures exist for moving media off-site.",
+   "fix": "Configure LUKS on backup volumes. Document the transit chain-of-custody. Encrypt USB drives with cryptsetup.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "media",
+    "encryption",
+    "backup"
+   ],
+   "references": {
+    "cmmc_L1": "MP.L1-3.8.001",
+    "nist_800_53": "MP-4"
+   },
+   "automated": false
+  },
+  {
+   "id": "PE.L1-3.10.001",
+   "family": "PE",
+   "title": "Physical Access",
+   "description": "Limit physical access to information systems, equipment, and the respective operating environments to authorized individuals.",
+   "severity": "medium",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify the data center has controlled physical access (badge / biometric / staffed reception).",
+   "fix": "Document the physical access control procedure. Maintain visitor log. Quarterly review of badge access list.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "physical",
+    "datacenter"
+   ],
+   "references": {
+    "cmmc_L1": "PE.L1-3.10.001",
+    "nist_800_53": "PE-2"
+   },
+   "automated": false
+  },
+  {
+   "id": "SC.L1-3.13.001",
+   "family": "SC",
+   "title": "System and Communications Protection",
+   "description": "Monitor and control communications at the external boundary and key internal boundaries of the information system.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify firewall (ufw / nftables / iptables) is active and default-deny on inbound. Verify only required ports are open (ss -tlnp).",
+   "fix": "ufw default deny incoming; ufw default allow outgoing. Open only 22, 80, 443, plus application-specific ports.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "boundary",
+    "firewall",
+    "network"
+   ],
+   "references": {
+    "cmmc_L1": "SC.L1-3.13.001",
+    "nist_800_53": "SC-7"
+   },
+   "automated": true
+  },
+  {
+   "id": "SC.L1-3.13.002",
+   "family": "SC",
+   "title": "Boundary Protection",
+   "description": "Implement subnetworks for publicly accessible system components that are physically or logically separated from internal networks.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify DMZ exists for public-facing services; verify internal services are not directly internet-reachable.",
+   "fix": "Document the network segmentation. Verify the public mail host is in the DMZ; the Wazuh manager + audit log storage are internal-only.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "dmz",
+    "network-segmentation"
+   ],
+   "references": {
+    "cmmc_L1": "SC.L1-3.13.002",
+    "nist_800_53": "SC-7"
+   },
+   "automated": false
+  },
+  {
+   "id": "SI.L1-3.14.001",
+   "family": "SI",
+   "title": "Malicious Code Protection",
+   "description": "Implement malicious code protection mechanisms at information system entry and exit points.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify ClamAV / rkhunter / chkrootkit is installed and scheduled. Verify Wazuh FIM (file integrity monitoring) is enabled on /usr, /bin, /sbin, /etc.",
+   "fix": "apt-get install clamav clamav-daemon; systemctl enable --now clamav-daemon. Enable Wazuh FIM via syscheck configuration.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "antivirus",
+    "fim",
+    "malware"
+   ],
+   "references": {
+    "cmmc_L1": "SI.L1-3.14.001",
+    "nist_800_53": "SI-3"
+   },
+   "automated": true
+  },
+  {
+   "id": "SI.L1-3.14.002",
+   "family": "SI",
+   "title": "Monitoring and Detection",
+   "description": "Monitor information systems for attacks and indicators of potential attacks.",
+   "severity": "high",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify Wazuh manager + agents are active. Verify at least one detection rule is enabled that fires for the test scenario (SSH brute force from 9.9.9.9).",
+   "fix": "Ensure Wazuh agents are enrolled (id 000/002/...). Verify rule sets are current: /var/ossec/etc/ossec.conf has <syscheck> + <rootcheck> enabled.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "monitoring",
+    "detection",
+    "wazuh"
+   ],
+   "references": {
+    "cmmc_L1": "SI.L1-3.14.002",
+    "nist_800_53": "SI-4"
+   },
+   "automated": true
+  },
+  {
+   "id": "SI.L1-3.14.003",
+   "family": "SI",
+   "title": "Spam Protection",
+   "description": "Implement spam protection mechanisms at information system entry points.",
+   "severity": "medium",
+   "baselines": [
+    "low",
+    "moderate",
+    "high"
+   ],
+   "check": "Verify Postfix has spam filtering enabled (Rspamd, SpamAssassin, or Amavis). Verify DKIM/SPF/DMARC records are published for the sending domain.",
+   "fix": "apt-get install rspamd; configure Postfix to use Rspamd as a milter. Add SPF + DKIM + DMARC DNS records.",
+   "tags": [
+    "cmmc",
+    "cmmc-L1",
+    "spam",
+    "email",
+    "postfix"
+   ],
+   "references": {
+    "cmmc_L1": "SI.L1-3.14.003",
+    "nist_800_53": "SI-8"
+   },
+   "automated": false
+  },
+  {
+   "id": "AC.L2-3.1.005",
+   "family": "AC",
+   "title": "Network Access Control (L2)",
+   "description": "Employ the principle of least privilege, including for specific security functions and privileged accounts.",
+   "severity": "high",
+   "baselines": [
+    "moderate",
+    "high"
+   ],
+   "check": "Verify network segmentation; verify privileged accounts have minimum required access; verify ACLs on internal subnets.",
+   "fix": "Implement nftables ACLs. Reduce sudoers to the minimum required. Separate management network from data plane.",
+   "tags": [
+    "cmmc",
+    "cmmc-L2",
+    "least-privilege",
+    "network",
+    "acl"
+   ],
+   "references": {
+    "cmmc_L2": "AC.L2-3.1.005",
+    "nist_800_53": "AC-6"
+   },
+   "automated": false
+  },
+  {
+   "id": "AC.L2-3.1.007",
+   "family": "AC",
+   "title": "Network Access Control (segmentation)",
+   "description": "Limit network access to specific types of information system components (e.g., DMZ, internal subnets).",
+   "severity": "medium",
+   "baselines": [
+    "moderate",
+    "high"
+   ],
+   "check": "Verify network segmentation via nftables / VLAN / cloud security groups. Verify the public mail host is in the DMZ; the Wazuh manager + audit log storage are internal-only.",
+   "fix": "Document the segmentation. Verify internal services are not directly internet-reachable.",
+   "tags": [
+    "cmmc",
+    "cmmc-L2",
+    "segmentation",
+    "dmz"
+   ],
+   "references": {
+    "cmmc_L2": "AC.L2-3.1.007"
+   },
+   "automated": false
+  },
+  {
+   "id": "AU.L2-3.3.005",
+   "family": "AU",
+   "title": "Correlation (SIEM)",
+   "description": "Correlate information from audit records with information obtained from monitoring physical access, monitoring network activity, and other monitoring activities to further enhance the ability to identify unauthorized activities.",
+   "severity": "high",
+   "baselines": [
+    "moderate",
+    "high"
+   ],
+   "check": "Verify Wazuh SIEM is receiving logs from all systems in the scope. Verify a correlation rule fires when the same source IP triggers >=3 rules within 5 minutes.",
+   "fix": "Configure Wazuh manager + indexer + dashboard. Add a custom rule for brute-force correlation. Verify the indexer is at port 9200 and reachable.",
+   "tags": [
+    "cmmc",
+    "cmmc-L2",
+    "siem",
+    "correlation",
+    "wazuh"
+   ],
+   "references": {
+    "cmmc_L2": "AU.L2-3.3.005",
+    "nist_800_53": "AU-6"
+   },
+   "automated": true
+  },
+  {
+   "id": "AU.L2-3.3.006",
+   "family": "AU",
+   "title": "Audit Retention (1 year)",
+   "description": "Retain audit records for at least one year to provide support for after-the-fact investigations of security incidents.",
+   "severity": "medium",
+   "baselines": [
+    "moderate",
+    "high"
+   ],
+   "check": "Verify Wazuh indexer retention is set to >= 365 days; verify off-host backup of audit logs.",
+   "fix": "Edit /etc/wazuh-indexer/opensearch.yml: 'indices.query.bool.max_clause_count: 1024' and configure ISM policy for 365-day retention. Backup /var/ossec/logs/archives/ to off-host storage.",
+   "tags": [
+    "cmmc",
+    "cmmc-L2",
+    "retention",
+    "backup",
+    "audit"
+   ],
+   "references": {
+    "cmmc_L2": "AU.L2-3.3.006",
+    "nist_800_53": "AU-11"
+   },
+   "automated": false
+  },
+  {
+   "id": "IA.L2-3.5.005",
+   "family": "IA",
+   "title": "Authenticator Management",
+   "description": "Manage authenticators (passwords, keys, certificates) including initial distribution, lost/compromised, and revocation.",
+   "severity": "high",
+   "baselines": [
+    "moderate",
+    "high"
+   ],
+   "check": "Verify documented key/credential lifecycle procedure; verify revocation list is current; verify SSH keys are rotated annually.",
+   "fix": "Document the authenticator management procedure. Rotate SSH keys annually. Maintain a CRL for any internal CA.",
+   "tags": [
+    "cmmc",
+    "cmmc-L2",
+    "credentials",
+    "key-management"
+   ],
+   "references": {
+    "cmmc_L2": "IA.L2-3.5.005",
+    "nist_800_53": "IA-5"
+   },
+   "automated": false
+  },
+  {
+   "id": "IA.L2-3.5.007",
+   "family": "IA",
+   "title": "Cryptographic Protection",
+   "description": "Establish and manage cryptographic keys for cryptographic protection of information.",
+   "severity": "high",
+   "baselines": [
+    "moderate",
+    "high"
+   ],
+   "check": "Verify TLS is configured for all network-exposed services (mail, GitLab, Wazuh dashboard). Verify cipher suites are >= TLS 1.2 + AEAD.",
+   "fix": "Configure TLS 1.2+ across the fleet. Use Mozilla's 'modern' or 'intermediate' cipher list. Verify certs are from a trusted CA or the internal CA is documented.",
+   "tags": [
+    "cmmc",
+    "cmmc-L2",
+    "tls",
+    "cryptography"
+   ],
+   "references": {
+    "cmmc_L2": "IA.L2-3.5.007",
+    "nist_800_53": "SC-13"
+   },
+   "automated": true
+  }
+ ]
 }
