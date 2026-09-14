@@ -875,7 +875,9 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
     from soc_stig_remediate import tool_remediate_control as _remediate
     res = _remediate({"control_id": cid, "tenant_id": tid,
                       "confidence": args.get("confidence"),
-                      "dry_run": bool(args.get("dry_run"))})
+                      "dry_run": bool(args.get("dry_run")),
+                      "host": args.get("host"),
+                      "host_ip": args.get("host_ip")})
     out: Dict[str, Any] = {"ok": True, "tool": "remediate_control",
                            "remediation": res}
     if res.get("status") == "applied":
