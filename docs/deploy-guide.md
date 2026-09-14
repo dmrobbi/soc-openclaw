@@ -140,7 +140,7 @@ journalctl -u soc-compliance-daily.service -n 20   # nightly refresh output (JSO
 | Timer | Schedule | What it does |
 |---|---|---|
 | `soc-daily-decisions` | 06:00 UTC | Daily decisions report (audit + realtime logs → `soc-agent-decisions-<day>.md`) |
-| `soc-compliance-daily` | 06:30 UTC | Collect evidence for every tenant, merge any OpenSCAP results archived that day (worst-result across hosts), recompute all tenant scores |
+| `soc-compliance-daily` | 06:30 UTC | Collect evidence for every tenant, merge any OpenSCAP results archived that day (worst-result across hosts), **auto-remediate** failing controls with a safe shell fix (opt-in via `SOC_AUTO_REMEDIATE=1`, tenant-gated, fully audited), recompute all tenant scores |
 | `soc-healthcheck` | hourly | `deploy/healthcheck.sh`; on failure pages the operator (OpenClaw chat → SMTP fallback, 4h cooldown) |
 
 Manual remediation of a failing control (dashboard: host page →

@@ -30,6 +30,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -43,14 +45,128 @@ def _today() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
 
 
+def _smoke() -> int:
+    """Hermetic self-test: isolated config + temp state dirs, full
+    orchestration in dry-run mode (no writes)."""
+    import shutil
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="soc-compliance-daily-smoke-")
+    os.environ["SOC_ROUTING_CONFIG"] = str(
+        HERE.parent / "config" / "soc-routing.yaml.example")
+    os.environ["SOC_EVIDENCE_DIR"] = os.path.join(tmp, "evidence")
+    os.environ["SOC_SNAPSHOT_DIR"] = os.path.join(tmp, "snapshots")
+    os.environ["SOC_REMEDIATION_LOG"] = os.path.join(tmp, "remediations.jsonl")
+    os.environ["SOC_AUDIT_LOG"] = os.path.join(tmp, "audit.jsonl")
+    try:
+        rc = main(["--dry-run", "--json"])
+        assert rc == 0, rc
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    sys.stdout.write("soc-compliance-daily smoke test: OK\n")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# auto-remediation pass (Phase 1.3, 2026-09-14)
+# ---------------------------------------------------------------------------
+def _remediate_control_via_sudo(control_id: str, tenant_id: str) -> Dict[str, Any]:
+    """Run one E2 remediation as ROOT (fixes need root), with the same
+    state envs as this process. Artifacts the root run creates are
+    re-owned to 999:999 immediately (the container state contract —
+    healthcheck asserts no root-owned files)."""
+    args_json = json.dumps({"control_id": control_id, "tenant_id": tenant_id,
+                            "confidence": 0.95, "timeout": 300})
+    envs = [f"SOC_ROUTING_CONFIG={os.environ.get('SOC_ROUTING_CONFIG', '')}",
+            f"SOC_SNAPSHOT_DIR={os.environ.get('SOC_SNAPSHOT_DIR', str(Path.home() / '.openclaw' / 'compliance' / 'snapshots'))}",
+            f"SOC_REMEDIATION_LOG={os.environ.get('SOC_REMEDIATION_LOG', str(Path.home() / '.openclaw' / 'compliance' / 'remediations.jsonl'))}",
+            f"SOC_AUDIT_LOG={os.environ.get('SOC_AUDIT_LOG', str(Path.home() / '.openclaw-wazuh' / 'audit_log.jsonl'))}"]
+    cmd = ["sudo", "-n", "env"] + envs + [
+        "/usr/bin/python3", str(HERE / "soc_stig_remediate.py"),
+        "--tool", "remediate_control", "--args", args_json]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=420)
+    except subprocess.TimeoutExpired as e:
+        return {"ok": False, "status": "timeout", "error": repr(e)}
+    except Exception as e:
+        return {"ok": False, "status": "error", "error": repr(e)}
+    try:
+        return json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return {"ok": False, "status": "unparseable",
+                "stdout": (proc.stdout or "")[:400],
+                "stderr": (proc.stderr or "")[:400]}
+
+
+def _auto_remediate_pass(tenants: List[str], day: str,
+                         collect_results: Dict[str, Any],
+                         dry_run: bool) -> Dict[str, Any]:
+    """Apply safe shell fixes for controls that are not pass today.
+
+    Layered gates (all must pass):
+      1. operator opt-in: SOC_AUTO_REMEDIATE=1 or --remediate
+      2. only controls with automated=true + a pure-shell fix (the
+         2026-09-14 catalogue cleanup guarantees shell fixes are safe
+         and idempotent)
+      3. the tenant routing gate (can_auto_remediate: allowed_actions,
+         threshold, severity eligibility) — enforced inside
+         soc_stig_remediate.remedieate_control
+      4. not already pass in today's evidence
+    """
+    from soc_stig import get_catalogue
+    from soc_stig_remediate import looks_like_command
+    out: Dict[str, Any] = {}
+    catalogue = {c["id"]: c for c in get_catalogue()["controls"]}
+    for t in tenants:
+        res = collect_results.get(t)
+        if not isinstance(res, dict) or not res.get("ok"):
+            continue
+        candidates = []
+        for c in res.get("controls", []):
+            cid = c.get("control_id")
+            if c.get("status") == "pass" or not cid:
+                continue
+            cat = catalogue.get(cid)
+            if not cat or not cat.get("automated"):
+                continue
+            if not looks_like_command((cat.get("fix") or "").strip()):
+                continue
+            candidates.append(cid)
+        if not candidates:
+            continue
+        entry: Dict[str, Any] = {"candidates": candidates}
+        if dry_run:
+            entry["note"] = "would remediate via sudo (tenant gate checked at apply time)"
+            out[t] = entry
+            continue
+        entry["results"] = {}
+        for cid in candidates:
+            r = _remediate_control_via_sudo(cid, t)
+            entry["results"][cid] = {"status": r.get("status"),
+                                     "reason": r.get("reason")}
+        out[t] = entry
+    return out
+
+
 def main(argv: List[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="SOC nightly compliance refresh")
     ap.add_argument("--day", default=_today(), help="evidence day (UTC date)")
     ap.add_argument("--dry-run", action="store_true",
                     help="resolve tenants + list what would run; no writes")
+    ap.add_argument("--remediate", action="store_true",
+                    help="auto-remediation pass: for controls that are not "
+                         "pass today and have a safe shell fix, apply it "
+                         "(tenant-gated; requires SOC_AUTO_REMEDIATE=1 or "
+                         "this flag). Fixes needing root run via "
+                         "sudo -n env (wez must have NOPASSWD sudo)")
     ap.add_argument("--json", action="store_true", help="JSON output")
+    ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.smoke:
+        return _smoke()
 
     from soc_routing import get_config
     from soc_evidence import tool_collect_evidence
@@ -59,6 +175,7 @@ def main(argv: List[str] | None = None) -> int:
     tenants = list(get_config().known_tenants())
     out: Dict[str, Any] = {"day": args.day, "dry_run": args.dry_run,
                            "tenants": tenants, "collect": {}, "oscap": {}}
+    raw_collect: Dict[str, Any] = {}
 
     # 1. audit/realtime/remediation evidence per tenant
     for t in tenants:
@@ -67,6 +184,7 @@ def main(argv: List[str] | None = None) -> int:
             continue
         try:
             r = tool_collect_evidence({"tenant_id": t, "day": args.day})
+            raw_collect[t] = r
             out["collect"][t] = {"ok": bool(r.get("ok")),
                                  "total_controls": r.get("total_controls"),
                                  "counts": r.get("counts")}
@@ -98,6 +216,31 @@ def main(argv: List[str] | None = None) -> int:
                     out["oscap"][t] = {"error": repr(exc)}
     else:
         out["oscap"] = {"hosts": [], "note": "no scans archived for the day"}
+
+    # 2b. auto-remediation pass (opt-in: SOC_AUTO_REMEDIATE=1 or --remediate)
+    enabled = args.remediate or \
+        os.environ.get("SOC_AUTO_REMEDIATE", "0") == "1"
+    out["remediate"] = {"enabled": enabled}
+    applied_any = False
+    if enabled:
+        out["remediate"].update(_auto_remediate_pass(
+            tenants, args.day, raw_collect, args.dry_run))
+        if not args.dry_run:
+            for v in out["remediate"].values():
+                if isinstance(v, dict) and any(
+                        (r or {}).get("status") == "applied"
+                        for r in v.get("results", {}).values()):
+                    applied_any = True
+        if applied_any:
+            # re-collect so the new remediation evidence is graded
+            out["recollect"] = {}
+            for t in tenants:
+                try:
+                    r = tool_collect_evidence({"tenant_id": t, "day": args.day})
+                    out["recollect"][t] = {"ok": bool(r.get("ok")),
+                                           "counts": r.get("counts")}
+                except Exception as exc:
+                    out["recollect"][t] = {"error": repr(exc)}
 
     # 3. scores for all tenants
     if args.dry_run:

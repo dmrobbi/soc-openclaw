@@ -378,9 +378,12 @@ def _derive_status(control: Dict[str, Any],
     # until a remediation pass confirms otherwise (2026-09-13: the
     # old heuristic graded them neutral, so controls with 48 live
     # findings stayed manual_review forever).
+    # stig_remediate_refused is NOT fail-grade (2026-09-14): a refusal
+    # is a policy decision ("human handles it"), not measured
+    # non-compliance — thing1 had unattended-upgrades installed and
+    # enabled while a severity-policy refusal graded the control fail.
     has_fail = any(e.get("status") == "fail" or
-                   e.get("kind") in ("stig_remediate_refused",
-                                     "stig_evidence")
+                   e.get("kind") == "stig_evidence"
                    for e in evidence)
     if has_fail and not has_pass:
         return "fail"
@@ -727,7 +730,10 @@ def _smoke() -> int:
 
     ac = next((c for c in r["controls"] if c["control_id"] == "AC.L2-3.1.005"), None)
     if ac is not None:  # AC.L2-3.1.005 is L2-only; only in example-soc
-        assert ac["status"] == "fail", f"AC.L2-3.1.005 should be fail: {ac}"
+        # refused rows are neutral since 2026-09-14 (a refusal is a policy
+        # decision, not measured non-compliance) -> manual_review
+        assert ac["status"] == "manual_review", \
+            f"AC.L2-3.1.005 should be manual_review: {ac}"
 
     # 2. list_evidence
     r = tool_list_evidence({"tenant_id": "example-soc", "day": "2026-08-08"})
