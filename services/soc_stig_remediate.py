@@ -93,6 +93,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import uuid
@@ -299,14 +300,71 @@ def _tenant_or_default(tenant_id: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Remote execution (Phase 1.4, 2026-09-14): fleet remediation via SSH
+# ---------------------------------------------------------------------------
+def _remote_ctx(args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve the remediation target. None = local (the SOC host).
+    Accepts a fleet-resolvable host name/id, or an explicit --host-ip
+    for out-of-band targets (family arg not needed for remediation)."""
+    host = (args.get("host") or "").strip()
+    if not host or host.lower() in ("local", socket.gethostname().lower()):
+        return None
+    ip = (args.get("host_ip") or "").strip()
+    if not ip:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent / "scanner"))
+            from soc_scanner import fleet_agents
+        except ImportError:
+            raise RemediationError(
+                "soc_scanner not importable; cannot resolve fleet hosts")
+        for a in fleet_agents():
+            if host in (a.get("name"), a.get("id")):
+                ip = a.get("ip") or ""
+                break
+        else:
+            raise RemediationError(
+                f"host {host!r} not in fleet; pass host_ip for "
+                "out-of-band targets")
+    if not ip:
+        raise RemediationError(f"host {host!r} has no IP in the fleet")
+    return {"name": host, "ip": ip,
+            "port": os.environ.get("SOC_SCAN_SSH_PORT", "22"),
+            "user": os.environ.get("SOC_SCAN_SSH_USER", "wez")}
+
+
+def _run_on(ctx: Optional[Dict[str, Any]], cmd: str,
+            timeout: float = 10.0) -> Tuple[int, str, str]:
+    """Run a shell command locally (ctx None) or on a remote host via
+    ssh + `sudo -n bash -s` (the command goes on stdin, so no quoting
+    hazards). Targets need NOPASSWD sudo for the SSH user — the same
+    contract as the OpenSCAP provisioning (deploy/openscap-setup.sh)."""
+    if ctx is None:
+        return _run(cmd, timeout=timeout)
+    if os.environ.get("SOC_REMEDIATION_DRY_RUN", "0") == "1":
+        return 0, "<dry_run>", ""
+    ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+           "-p", str(ctx.get("port") or 22),
+           f"{ctx.get('user') or 'wez'}@{ctx['ip']}", "sudo -n bash -s"]
+    try:
+        proc = subprocess.run(ssh, input=cmd, capture_output=True,
+                              text=True, timeout=timeout)
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timeout after {timeout}s"
+    except Exception as e:
+        return 1, "", f"exec error: {e!r}"
+
+
+# ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
 def tool_check_control(args: Dict[str, Any]) -> Dict[str, Any]:
-    """check_control(control_id, tenant_id=None)
-    -> {ok, control_id, check_output, status, snapshot_id}"""
+    """check_control(control_id, tenant_id=None, host=None)
+    -> {ok, control_id, check_output, status, snapshot_id, host}"""
     cid = args.get("control_id")
     if not cid:
         raise ValueError("control_id is required")
+    ctx = _remote_ctx(args)
     c = _control_from_catalogue(cid)
     check_text = (c.get("check") or "").strip()
     if not check_text:
@@ -316,6 +374,7 @@ def tool_check_control(args: Dict[str, Any]) -> Dict[str, Any]:
             "check_output": "",
             "status": "manual_review",
             "note": "no `check:` field; manual review required",
+            "host": (ctx or {}).get("name", "local"),
         }
     if not looks_like_command(check_text):
         return {
@@ -324,15 +383,17 @@ def tool_check_control(args: Dict[str, Any]) -> Dict[str, Any]:
             "check_output": check_text,
             "status": "manual_review",
             "note": "check is natural-language, not a command",
+            "host": (ctx or {}).get("name", "local"),
         }
-    # Run the check
-    rc, out, err = _run(check_text, timeout=10.0)
+    # Run the check (locally or on the target host)
+    rc, out, err = _run_on(ctx, check_text, timeout=30.0)
     snapshot_id = ""
     if out or err:
         snapshot_id = _new_action_id(cid)
         _write_snapshot(snapshot_id, {
             "ts": _now_iso(),
             "control_id": cid,
+            "host": (ctx or {}).get("name", "local"),
             "kind": "check_only",
             "check_cmd": check_text,
             "rc": rc,
@@ -348,34 +409,42 @@ def tool_check_control(args: Dict[str, Any]) -> Dict[str, Any]:
         "check_rc": rc,
         "status": status,
         "snapshot_id": snapshot_id,
+        "host": (ctx or {}).get("name", "local"),
     }
 
 
-def _probe(check_text: str) -> Tuple[int, str, str]:
+def _probe(ctx: Optional[Dict[str, Any]], check_text: str) -> Tuple[int, str, str]:
     """State probe for snapshots: run the control's `check` command
-    (read-only). Under SOC_REMEDIATION_DRY_RUN=1 _run is hermetic."""
+    (read-only) on the target. Under SOC_REMEDIATION_DRY_RUN=1 _run_on
+    is hermetic."""
     if check_text and looks_like_command(check_text):
-        return _run(check_text, timeout=10.0)
+        return _run_on(ctx, check_text, timeout=30.0)
     return 0, "", ""
 
 
 def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
     """remediate_control(control_id, tenant_id=None,
-                        confidence=0.0, dry_run=False)"""
+                        confidence=0.0, dry_run=False,
+                        host=None, host_ip=None, timeout=300)
+    host=None applies on the SOC host; host=<fleet name/id> applies
+    remotely via ssh + `sudo -n bash -s` (Phase 1.4)."""
     cid = args.get("control_id")
     if not cid:
         raise ValueError("control_id is required")
+    ctx = _remote_ctx(args)
+    host = (ctx or {}).get("name", "local")
     c = _control_from_catalogue(cid)
     if not c.get("automated"):
         return _result(cid, "manual_review",
-                       reason="control.automated is false")
+                       reason="control.automated is false", host=host)
     fix_text = (c.get("fix") or "").strip()
     if not fix_text:
         return _result(cid, "manual_review",
                        reason="no `fix:` field")
     if not looks_like_command(fix_text):
         return _result(cid, "manual_review",
-                       reason="fix is natural-language, not a command")
+                       reason="fix is natural-language, not a command",
+                       host=host)
     # Per-tenant gate
     tenant_id = args.get("tenant_id")
     tenant = _tenant_or_default(tenant_id)
@@ -405,17 +474,18 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
                         },
                     },
                 })
-                return _result(cid, "refused", reason=why)
+                return _result(cid, "refused", reason=why, host=host)
         except Exception as e:
             return _result(cid, "refused",
-                           reason=f"routing config error: {e!r}")
+                           reason=f"routing config error: {e!r}", host=host)
     # Confidence check (if no tenant config, the caller
     # passed confidence; require >= 0.85 default)
     if tenant is None:
         confidence = float(args.get("confidence") or 0.0)
         if confidence < 0.85:
             return _result(cid, "refused",
-                           reason=f"confidence {confidence:.2f} < 0.85")
+                           reason=f"confidence {confidence:.2f} < 0.85",
+                           host=host)
     # Dry run
     dry_run = bool(args.get("dry_run")) or \
         os.environ.get("SOC_REMEDIATION_DRY_RUN", "0") == "1"
@@ -424,10 +494,11 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
     # (double apply); the port captures state without mutating.
     action_id = _new_action_id(cid)
     check_text = (c.get("check") or "").strip()
-    pre_rc, pre_out, pre_err = _probe(check_text)
+    pre_rc, pre_out, pre_err = _probe(ctx, check_text)
     snapshot: Dict[str, Any] = {
         "ts": _now_iso(),
         "control_id": cid,
+        "host": host,
         "kind": "pre_remediation",
         "fix_cmd": fix_text,
         "check_cmd": check_text if looks_like_command(check_text) else "",
@@ -443,6 +514,7 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
             "action_id": action_id,
             "control_id": cid,
             "tenant_id": tenant_id,
+            "host": host,
             "status": "dry_run",
             "fix_cmd": fix_text,
             "snapshot_path": snapshot_path,
@@ -451,24 +523,28 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
             "ok": True, "tool": "remediate_control",
             "control_id": cid, "action_id": action_id,
             "status": "dry_run",
+            "host": host,
             "reason": "SOC_REMEDIATION_DRY_RUN=1 (or dry_run arg)",
             "snapshot_id": action_id,
             "snapshot_path": snapshot_path,
         }
-    # Apply
-    rc, out, err = _run(fix_text, timeout=30.0)
+    # Apply (root on the target; remote runs via ssh + sudo -n bash -s)
+    apply_timeout = float(args.get("timeout") or 300)
+    rc, out, err = _run_on(ctx, fix_text, timeout=apply_timeout)
     # Audit
     _audit_record({
         "runId": action_id,
         "agent_id": "soc-stig-remediate",
         "tenant_id": tenant_id or "unknown",
+        "host": host,
         "input_kind": "stig_remediate_apply",
-        "input_summary": f"apply fix for {cid}",
+        "input_summary": f"apply fix for {cid} on {host}",
         "outcome": "ok" if rc == 0 else "error",
         "error": None if rc == 0 else (err or f"rc={rc}"),
         "extra": {
             "stig_remediate_applied": {
                 "control_id": cid,
+                "host": host,
                 "fix_cmd": fix_text,
                 "rc": rc,
                 "stdout": out[:500],
@@ -480,7 +556,7 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
     })
     # Update snapshot with post-state: re-run the CHECK to verify the
     # fix took effect (upstream re-ran the fix here).
-    post_rc, post_out, post_err = _probe(check_text)
+    post_rc, post_out, post_err = _probe(ctx, check_text)
     snapshot["post_probe_rc"] = post_rc
     snapshot["post_probe_stdout"] = post_out[:MAX_SNAPSHOT_BYTES // 2]
     snapshot["post_probe_stderr"] = post_err[:MAX_SNAPSHOT_BYTES // 2]
@@ -492,6 +568,7 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
         "action_id": action_id,
         "control_id": cid,
         "tenant_id": tenant_id,
+        "host": host,
         "status": "applied" if rc == 0 else "failed",
         "fix_cmd": fix_text,
         "snapshot_path": snapshot_path,
@@ -504,6 +581,7 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
         "reason": None if rc == 0 else (err or f"rc={rc}"),
         "snapshot_id": action_id,
         "snapshot_path": snapshot_path,
+        "host": host,
     }
 
 
@@ -592,9 +670,11 @@ def tool_get_remediation(args: Dict[str, Any]) -> Dict[str, Any]:
     raise LookupError(f"action_id not found: {aid}")
 
 
-def _result(cid: str, status: str, *, reason: str = "") -> Dict[str, Any]:
+def _result(cid: str, status: str, *, reason: str = "",
+            host: str = "local") -> Dict[str, Any]:
     return {"ok": True, "tool": "remediate_control",
-            "control_id": cid, "status": status, "reason": reason}
+            "control_id": cid, "status": status, "reason": reason,
+            "host": host}
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +794,16 @@ def _smoke() -> int:
     assert not looks_like_command("Document the access control policy.")
     assert looks_like_command("chmod 0600 /var/log/audit/*.log; chown root:root")
     assert looks_like_command("apt-get install unattended-upgrades && systemctl enable unattended-upgrades")
+
+    # 15. Remote (Phase 1.4): unknown host fails fast BEFORE any ssh
+    try:
+        tool_remediate_control({
+            "control_id": "AU.L1-3.3.003", "host": "no-such-host",
+            "tenant_id": "example-soc", "confidence": 0.95})
+    except RemediationError as e:
+        assert "not in fleet" in str(e), e
+    else:
+        raise AssertionError("expected RemediationError for unknown host")
 
     shutil.rmtree(tmp, ignore_errors=True)
     sys.stdout.write("soc-stig-remediate smoke test: OK\n")

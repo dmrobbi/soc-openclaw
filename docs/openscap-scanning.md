@@ -119,5 +119,20 @@ per-host tallies, evidence counts, and the recomputed score.
   `stig_remediate`). Applied fixes write snapshot + audit row +
   remediation log entry — the rows soc_evidence grades into PASS
   evidence, so the next collect/score credits the pass. Commands run
-  as the invoking user; root-needing fixes fail honestly (rc≠0) — run
-  the CLI under sudo for those.
+  as the invoking user; root-needing local fixes fail honestly (rc≠0) —
+  run the CLI under sudo for those.
+- **Fleet remediation (Phase 1.4, 2026-09-14)**: add `"host":"<fleet
+  name/id>"` (or `"host_ip"` for out-of-band targets) to the tool args
+  and the fix runs ON the target via `ssh <user>@<ip> 'sudo -n bash
+  -s'` — the same SSH contract as the scanner (NOPASSWD sudo for the
+  SSH user, from `deploy/openscap-setup.sh`). No local root needed:
+  the local CLI runs as your user (ssh keys under `~/.ssh`), the fix
+  executes as remote root. Host resolution goes through C2/C1
+  (`fleet_agents`); unknown hosts fail fast. Snapshots/audit rows carry
+  the host. Example:
+  `python3 services/soc_stig_remediate.py --tool remediate_control
+  --args '{"control_id":"IA.L1-3.5.002","tenant_id":"...",
+  "confidence":0.95,"host":"evgen-b"}'` — verified live on evgen-b
+  (minlen = 14 + libpam-pwquality installed). The nightly
+  auto-remediation pass stays LOCAL-only by design; fleet remediation
+  is operator-triggered for now.
