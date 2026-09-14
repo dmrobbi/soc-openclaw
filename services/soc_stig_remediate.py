@@ -622,11 +622,13 @@ def _smoke() -> int:
     assert r["status"] == "manual_review", r
     assert "automated" in r["reason"], r
 
-    # 2. Manual review: a control whose `fix` is natural-language
-    #    (AC.L1-3.1.003 is automated but its fix is prose)
-    r = tool_remediate_control({"control_id": "AC.L1-3.1.003"})
+    # 2. Manual review: automated=true but the fix is natural-language
+    #    (after the 2026-09-14 catalogue cleanup most prose fixes were
+    #    normalized to shell or demoted; AC.L1-3.1.002 covers the
+    #    automated=false manual-review path instead)
+    r = tool_remediate_control({"control_id": "AC.L1-3.1.002"})
     assert r["status"] == "manual_review", r
-    assert "natural-language" in r["reason"], r
+    assert "automated" in r["reason"], r
 
     # 3. Refused: control.automated=true but the tenant does not
     #    allow auto_remediate. example-soc-2 is the sandbox tenant.
