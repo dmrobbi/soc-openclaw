@@ -108,4 +108,16 @@ per-host tallies, evidence counts, and the recomputed score.
   `stig_evidence` controls as fail; OpenSCAP passes grade controls as
   pass. Controls with neither stay `manual_review` (no score credit).
 - Remediation (turning findings into fixes and pass-grade evidence) is
-  the remaining half — `soc_stig_remediate.py` port is pending.
+  ported (Track E2, `services/soc_stig_remediate.py`, 2026-09-14):
+  `check_control` / `remediate_control` / `rollback_control` /
+  `list_remediations` / `get_remediation`. CLI:
+  `python3 services/soc_stig_remediate.py --tool remediate_control
+  --args '{"control_id":"...","tenant_id":"...","confidence":0.95}'`
+  (add `"dry_run":true` to preview; `SOC_REMEDIATION_DRY_RUN=1` forces
+  it globally). The dashboard exposes `remediate_control` (mutation-
+  gated via C2 `/healthz` like the scan triggers; tasklog kind
+  `stig_remediate`). Applied fixes write snapshot + audit row +
+  remediation log entry — the rows soc_evidence grades into PASS
+  evidence, so the next collect/score credits the pass. Commands run
+  as the invoking user; root-needing fixes fail honestly (rc≠0) — run
+  the CLI under sudo for those.

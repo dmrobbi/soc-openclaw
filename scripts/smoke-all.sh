@@ -37,6 +37,7 @@ MODULES=(
   "services/soc_score.py"
   "services/soc_evidence.py"
   "services/soc_stig_classifier.py"
+  "services/soc_stig_remediate.py"
   "services/daily-decisions/soc_daily_decisions.py"
 )
 
