@@ -83,6 +83,30 @@ Events) silently empties while the SOC dashboard keeps working.
 | `Result: resources` | missing `ExecStartPre` binary or mandatory `EnvironmentFile` | installer writes glue before enabling units; `-` prefix on optional files |
 | creds silently missing (`missing: [...]` in `/healthz`) | env file written by ExecStartPre never loaded | the manager unit carries
   `EnvironmentFile=-/tmp/soc-manager-mcp.env` — keep that line if you edit units |
+| evidence/snapshot writes silently fail | dashboard unit is `ProtectSystem=strict` + `ProtectHome=read-only`; only `ReadWritePaths` dirs are writable | the soc-dashboard template whitelists `~/.openclaw/soc`, `~/.openclaw/compliance` and `~/.openclaw-wazuh` — keep those lines if you edit units (2026-09-14: without them every dashboard-triggered write failed with EROFS, swallowed by try/except) |
+
+## Pipeline state ownership (the `docker exec -u wazuh` rule)
+
+The Wazuh manager container runs the alert pipeline (and therefore
+`openclaw agent` for soc-narrator/soc-triage) as the container user
+**uid 999**, against the shared state dir `~/.openclaw-wazuh`
+(bind-mounted at the same in-container path). Contract:
+
+- every file/directory under `~/.openclaw-wazuh` must be readable
+  (and where written, writable) by uid 999 — owner or via the default
+  ACLs (`d:u:999:rwX` set on every directory by the 2026-09-14 fix);
+- a **bare `docker exec`** into the manager container runs as root and
+  creates root:root 600 state files (session state, device
+  credentials) that the wazuh user then cannot read — the result is
+  every LLM decision turn failing with EACCES or
+  `missing scope: operator.write` (the gateway rejects the env-token
+  fallback). Always `docker exec -u wazuh` for in-container openclaw
+  work; if state did get re-rooted:
+  `sudo chown -R 999:999 ~/.openclaw-wazuh` (healthcheck asserts this
+  hourly);
+- the mailbox env copy the container bind-mounts must be
+  `chown 999:<SOC_USER gid> && chmod 640` — 600 wez-owned copies
+  silently drop every level≥12 alert (the 2026-09-12 incident).
 
 ## Exposure posture
 
