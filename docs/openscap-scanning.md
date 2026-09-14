@@ -58,7 +58,10 @@ ssh wez@<target> 'sudo -n nohup oscap xccdf eval \
 
 The evidence store is keyed `<tenant>/<control>/<day>.jsonl` and each
 write **replaces** the day file — per-host writes would thrash scores
-(last-write-wins). The scanner merges automatically:
+(last-write-wins). The scanner merges automatically. A weekly cadence is shipped as
+`soc-scan-weekly.timer` (Sunday 03:00 UTC, `SOC_SCAN_PARALLEL=2`,
+per-run tasklog rows in `/tasks`); evidence merges in-run and the next
+nightly refresh rescores:
 
 - `--fleet` scans all reachable hosts and then performs a **single
   merged write** (worst result per rule across hosts).

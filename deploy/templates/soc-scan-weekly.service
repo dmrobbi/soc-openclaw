@@ -1,0 +1,41 @@
+# systemd unit for the weekly OpenSCAP fleet scan.
+#
+# Runs soc_scanner.py --fleet: every scannable managed host (OS family
+# resolved via C2/C1), results+reports archived under
+# ~/.openclaw/soc/scans/<day>/, then ONE worst-result merged evidence
+# write per control. The nightly soc-compliance-daily refresh (06:30)
+# then re-collects and rescores automatically — no manual steps.
+#
+# Staggered: SOC_SCAN_PARALLEL=2 keeps concurrent oscap-ssh runs gentle
+# (scans take 15–90 min per host; a 9-host fleet completes in ~2–4 h).
+# Runs as __SOC_USER__ (SSH keys for the fleet live in its ~/.ssh).
+#
+# Install: rendered by deploy/install.sh, which enables the timer.
+
+[Unit]
+Description=SOC weekly OpenSCAP fleet scan
+Documentation=file:///opt/soc-openclaw/docs/openscap-scanning.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/opt/soc-openclaw
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="SOC_ROUTING_CONFIG=/home/__SOC_USER__/.openclaw/soc/soc-routing.yaml"
+Environment="SOC_EVIDENCE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/evidence"
+Environment="SOC_AUDIT_LOG=/home/__SOC_USER__/.openclaw-wazuh/audit_log.jsonl"
+Environment="SOC_SNAPSHOT_DIR=/home/__SOC_USER__/.openclaw/compliance/snapshots"
+Environment="SOC_REMEDIATION_LOG=/home/__SOC_USER__/.openclaw/compliance/remediations.jsonl"
+Environment="SOC_SCAN_PARALLEL=2"
+# no start timeout: a 9-host staggered scan legitimately runs for hours
+TimeoutStartSec=0
+ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/scanner/soc_scanner.py --fleet
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-scan-weekly
+
+[Install]
+WantedBy=multi-user.target
