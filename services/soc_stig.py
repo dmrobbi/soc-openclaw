@@ -1229,7 +1229,7 @@ def _smoke() -> int:
     r = tool_applicable_for_tenant({"tenant_id": "example-soc"})
     assert r["ok"], r
     assert r["tenant_baseline"] == "high", r
-    # bedimsecurity has the full 17+ family set
+    # example-soc has the full 17+ family set
     assert r["total"] >= 1
     # every control must be in the "high" baseline and in a
     # tag the tenant lists. The catalogue now varies by tenant
@@ -1245,11 +1245,12 @@ def _smoke() -> int:
         assert c.get("family") in tags, c
         assert c["id"] in cat_by_id
 
-    # applicable_for_tenant example-soc
-    r = tool_applicable_for_tenant({"tenant_id": "example-soc"})
+    # applicable_for_tenant example-soc-2 (sandbox tenant:
+    # moderate baseline, small applicability list)
+    r = tool_applicable_for_tenant({"tenant_id": "example-soc-2"})
     assert r["ok"]
     assert r["tenant_baseline"] == "moderate"
-    # stsgym has the smaller applicability list (5 tags)
+    # example-soc-2 has the smaller applicability list (5 tags)
     assert r["total"] <= len(r["controls"]), r
 
     # applicable_for_tenant bad id

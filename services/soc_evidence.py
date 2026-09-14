@@ -628,9 +628,9 @@ def _smoke() -> int:
     snap_dir = os.path.join(tmp, "snapshots")
     ev = os.path.join(tmp, "evidence")
     os.makedirs(snap_dir)
-    os.environ["SOC_AUDIT_LOG_OVERRIDE"] = audit
-    os.environ["SOC_REALTIME_LOG_OVERRIDE"] = realtime
-    os.environ["SOC_REMEDIATION_LOG_OVERRIDE"] = rem
+    os.environ["SOC_AUDIT_LOG"] = audit
+    os.environ["SOC_REALTIME_LOG"] = realtime
+    os.environ["SOC_REMEDIATION_LOG"] = rem
     os.environ["SOC_SNAPSHOT_DIR"] = snap_dir
     os.environ["SOC_EVIDENCE_DIR"] = ev
 
@@ -641,7 +641,7 @@ def _smoke() -> int:
     # and re-implementing the file reads inline. Or just
     # point the module's constants at the temp dir BEFORE
     # importing it.
-    sys.path.insert(0, "/home/wez/repos/stsgym-work/scripts/soc")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import soc_evidence  # noqa
     # Patch the module constants to use the temp paths.
     # ALSO patch our own __main__ globals (the tool functions
@@ -665,7 +665,7 @@ def _smoke() -> int:
         # E2 applied for AU.L1-3.3.003
         {"ts": "2026-08-08T10:00:00.000+00:00",
          "runId": "stig-AU.L1-3.3.003-aaa", "agent_id": "soc-stig-remediate",
-         "tenant_id": "bedimsecurity", "input_kind": "stig_remediate_apply",
+         "tenant_id": "example-soc", "input_kind": "stig_remediate_apply",
          "input_summary": "apply fix for AU.L1-3.3.003",
          "outcome": "ok", "extra": {
              "stig_remediate_applied": {"control_id": "AU.L1-3.3.003",
@@ -673,7 +673,7 @@ def _smoke() -> int:
         # E2 refused for AC.L2-3.1.005
         {"ts": "2026-08-08T10:01:00.000+00:00",
          "runId": "stig-AC.L2-3.1.005-bbb", "agent_id": "soc-stig-remediate",
-         "tenant_id": "bedimsecurity", "input_kind": "stig_remediate_decision",
+         "tenant_id": "example-soc", "input_kind": "stig_remediate_decision",
          "input_summary": "refuse AC.L2-3.1.005",
          "outcome": "ok", "extra": {
              "stig_remediate_refused": {"control_id": "AC.L2-3.1.005",
@@ -697,7 +697,7 @@ def _smoke() -> int:
     rem_lines = [
         {"ts": "2026-08-08T10:00:00.000+00:00", "action_id": "stig-AU.L1-3.3.003-aaa",
          "control_id": "AU.L1-3.3.003", "status": "applied",
-         "tenant_id": "bedimsecurity"},
+         "tenant_id": "example-soc"},
     ]
     with open(rem, "w") as f:
         for r in rem_lines:
@@ -714,8 +714,8 @@ def _smoke() -> int:
     with open(os.path.join(snap_dir, "stig-AU.L1-3.3.003-aaa.json"), "w") as f:
         json.dump(snap, f)
 
-    # 1. Collect for bedimsecurity
-    r = tool_collect_evidence({"tenant_id": "bedimsecurity", "day": "2026-08-08"})
+    # 1. Collect for example-soc
+    r = tool_collect_evidence({"tenant_id": "example-soc", "day": "2026-08-08"})
     assert r["ok"], r
     assert r["total_controls"] >= 1, r
     au = next((c for c in r["controls"] if c["control_id"] == "AU.L1-3.3.003"), None)
@@ -726,11 +726,11 @@ def _smoke() -> int:
     assert au["evidence_count"] >= 1, au
 
     ac = next((c for c in r["controls"] if c["control_id"] == "AC.L2-3.1.005"), None)
-    if ac is not None:  # AC.L2-3.1.005 is L2-only; only in bedimsecurity
+    if ac is not None:  # AC.L2-3.1.005 is L2-only; only in example-soc
         assert ac["status"] == "fail", f"AC.L2-3.1.005 should be fail: {ac}"
 
     # 2. list_evidence
-    r = tool_list_evidence({"tenant_id": "bedimsecurity", "day": "2026-08-08"})
+    r = tool_list_evidence({"tenant_id": "example-soc", "day": "2026-08-08"})
     assert r["ok"], r
     assert r["total"] >= 1, r
     au_file = next((f for f in r["files"]
@@ -747,7 +747,7 @@ def _smoke() -> int:
     # 3. get_evidence
     safe_cid = au_file["control_id"]
     r = tool_get_evidence({
-        "tenant_id": "bedimsecurity",
+        "tenant_id": "example-soc",
         "control_id": safe_cid,  # use the safe form
         "day": "2026-08-08"})
     assert r["ok"], r
@@ -757,7 +757,7 @@ def _smoke() -> int:
     assert "stig_remediate_applied" in kinds, kinds
 
     # 4. evidence_summary
-    r = tool_evidence_summary({"tenant_id": "bedimsecurity",
+    r = tool_evidence_summary({"tenant_id": "example-soc",
                                 "day": "2026-08-08"})
     assert r["ok"], r
     assert r["total"] >= 1
@@ -765,14 +765,14 @@ def _smoke() -> int:
 
     # 5. Collect for a single control
     r = tool_collect_evidence({
-        "tenant_id": "bedimsecurity", "day": "2026-08-08",
+        "tenant_id": "example-soc", "day": "2026-08-08",
         "control_id": "AU.L1-3.3.003"})
     assert r["total_controls"] == 1, r
 
     # 6. Collect for a control that's not applicable
     try:
         tool_collect_evidence({
-            "tenant_id": "bedimsecurity", "day": "2026-08-08",
+            "tenant_id": "example-soc", "day": "2026-08-08",
             "control_id": "DOES-NOT-EXIST"})
     except ValueError as e:
         assert "not applicable" in str(e), e
@@ -781,14 +781,14 @@ def _smoke() -> int:
 
     # 7. Idempotency: re-collecting overwrites
     r1 = tool_collect_evidence({
-        "tenant_id": "bedimsecurity", "day": "2026-08-08",
+        "tenant_id": "example-soc", "day": "2026-08-08",
         "control_id": "AU.L1-3.3.003"})
     r2 = tool_collect_evidence({
-        "tenant_id": "bedimsecurity", "day": "2026-08-08",
+        "tenant_id": "example-soc", "day": "2026-08-08",
         "control_id": "AU.L1-3.3.003"})
     assert r1["controls"][0]["status"] == r2["controls"][0]["status"]
     # File should be a single .jsonl
-    path = soc_evidence._evidence_path("bedimsecurity",
+    path = soc_evidence._evidence_path("example-soc",
                                        "AU.L1-3.3.003", "2026-08-08")
     assert path.exists(), path
     # And the first line should be the status sentinel
@@ -796,10 +796,10 @@ def _smoke() -> int:
     obj = json.loads(first_line)
     assert "_status" in obj, obj
 
-    # 8. stsgym should have its own scope
-    r = tool_collect_evidence({"tenant_id": "stsgym", "day": "2026-08-08"})
+    # 8. example-soc-2 should have its own scope
+    r = tool_collect_evidence({"tenant_id": "example-soc-2", "day": "2026-08-08"})
     assert r["ok"], r
-    # stsgym doesn't allow auto_remediate but it should still
+    # example-soc-2 doesn't allow auto_remediate but it should still
     # get audit-log evidence items
     assert r["total_controls"] >= 1
 
