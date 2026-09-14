@@ -332,7 +332,7 @@ def _smoke() -> int:
         setattr(soc_score, name, value)
         globals()[name] = value
 
-    safe_tid = "bedimsecurity"
+    safe_tid = "example-soc"
     # Seed evidence for 3 controls across 3 days.
     # AU.L1-3.3.003: pass on all 3 days
     # AU.L1-3.3.001: fail on day 1, fail on day 2, pass on day 3
@@ -402,8 +402,8 @@ def _smoke() -> int:
     # 5. score_all_tenants
     r = tool_score_all_tenants({"day": "2026-08-08"})
     assert r["ok"], r
-    assert "bedimsecurity" in [t["tenant_id"] for t in r["tenants"]]
-    assert "stsgym" in [t["tenant_id"] for t in r["tenants"]]
+    assert "example-soc" in [t["tenant_id"] for t in r["tenants"]]
+    assert "example-soc-2" in [t["tenant_id"] for t in r["tenants"]]
     assert r["fleet_total"] > 0
 
     # 6. dashboard_score
