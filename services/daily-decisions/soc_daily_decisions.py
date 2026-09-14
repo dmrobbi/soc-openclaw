@@ -73,9 +73,17 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_AUDIT_LOG = os.path.expanduser("~/.openclaw/audit_log.jsonl")
-DEFAULT_REALTIME_LOG = os.path.expanduser(
-    "~/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl")
+# 2026-09-14: env-overridable, same contract as soc_evidence.py — the
+# systemd unit pins the CANONICAL fleet audit log
+# (~/.openclaw-wazuh/audit_log.jsonl); the legacy host-side default
+# below only had ~5 rows, which is why the daily reports were nearly
+# empty ("Total decisions: 1"). Realtime default moved from the stale
+# workspace/agentic-ai path (0-byte) to the live ingest path.
+DEFAULT_AUDIT_LOG = os.environ.get(
+    "SOC_AUDIT_LOG", "") or os.path.expanduser("~/.openclaw/audit_log.jsonl")
+DEFAULT_REALTIME_LOG = os.environ.get(
+    "SOC_REALTIME_LOG", "") or os.path.expanduser(
+    "~/.openclaw/soc/data/realtime_soc.jsonl")
 DEFAULT_OUTPUT_DIR = "/home/wez/.openclaw/workspace/memory"
 DEFAULT_C4_URL = "http://127.0.0.1:8769"
 
