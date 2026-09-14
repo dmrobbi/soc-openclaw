@@ -33,6 +33,10 @@ Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="SOC_ROUTING_CONFIG=/home/__SOC_USER__/.openclaw/soc/soc-routing.yaml"
 Environment="SOC_EVIDENCE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/evidence"
 Environment="SOC_AUDIT_LOG=/home/__SOC_USER__/.openclaw-wazuh/audit_log.jsonl"
+# Auto-remediation pass (Phase 1.3): controls that are not pass today
+# with a safe shell fix get applied (tenant-gated, idempotent, fully
+# audited). Set to 0 to collect+score only.
+Environment="SOC_AUTO_REMEDIATE=1"
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc_compliance_daily.py
 StandardOutput=journal
 StandardError=journal

@@ -219,7 +219,7 @@
     "high"
    ],
    "check": "Verify password policy enforces complexity + rotation; verify SSH key-based auth is preferred over passwords (PasswordAuthentication no in sshd_config).",
-   "fix": "sed -ri 's/^#?\\s*minlen.*/minlen = 14/' /etc/security/pwquality.conf",
+   "fix": "apt-get install -y libpam-pwquality && sed -ri 's/^#?\\s*minlen.*/minlen = 14/' /etc/security/pwquality.conf",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -426,7 +426,7 @@
     "high"
    ],
    "check": "Verify ClamAV / rkhunter / chkrootkit is installed and scheduled. Verify Wazuh FIM (file integrity monitoring) is enabled on /usr, /bin, /sbin, /etc.",
-   "fix": "apt-get install -y clamav clamav-daemon && systemctl enable --now clamav-daemon",
+   "fix": "apt-get install -y clamav clamav-daemon && (freshclam -q || true) && systemctl enable --now clamav-daemon",
    "tags": [
     "cmmc",
     "cmmc-L1",
