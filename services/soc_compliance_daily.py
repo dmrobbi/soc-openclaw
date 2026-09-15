@@ -99,6 +99,67 @@ def _remediate_control_via_sudo(control_id: str, tenant_id: str) -> Dict[str, An
                 "stderr": (proc.stderr or "")[:400]}
 
 
+def _fleet_remediation_pass(tenants: List[str], day: str,
+                            dry_run: bool) -> Dict[str, Any]:
+    """Fleet-scale remediation (Phase 1.4, 2026-09-14): for every
+    (host, control) failing in the day's scan results, apply the safe
+    shell fix ON the host via the E2 SSH path (wez + remote NOPASSWD
+    sudo — no local root). Layered gates:
+      1. operator opt-in: SOC_AUTO_REMEDIATE_FLEET=1 or --remediate-fleet
+      2. optional host allowlist: SOC_AUTO_REMEDIATE_FLEET_HOSTS
+         (comma-separated; EMPTY = no hosts, fail-closed)
+      3. only controls with automated=true + a pure-shell fix
+      4. the tenant routing gate (allowed_actions, threshold, severity)
+         — enforced inside remediate_control
+    """
+    from soc_scanner import host_control_status
+    from soc_stig import get_catalogue
+    from soc_stig_remediate import tool_remediate_control, looks_like_command
+    allow = {h.strip() for h in
+             os.environ.get("SOC_AUTO_REMEDIATE_FLEET_HOSTS", "").split(",")
+             if h.strip()}
+    catalogue = {c["id"]: c for c in get_catalogue()["controls"]}
+    out: Dict[str, Any] = {"allowlist": sorted(allow) or "(none)"}
+    for t in tenants:
+        try:
+            st = host_control_status(day, tenant_id=t)
+        except Exception as exc:
+            out[t] = {"error": repr(exc)}
+            continue
+        if not st.get("ok"):
+            continue
+        t_out: Dict[str, Any] = {}
+        for host, info in sorted(st.get("hosts", {}).items()):
+            if allow and host not in allow:
+                t_run = {"skipped": "host not in allowlist"}
+            else:
+                t_run = {"results": {}}
+                for cid in info.get("failed", []):
+                    cat = catalogue.get(cid)
+                    if not cat or not cat.get("automated"):
+                        continue
+                    if not looks_like_command((cat.get("fix") or "").strip()):
+                        continue
+                    if dry_run:
+                        t_run["results"][cid] = "would remediate (host)"
+                        continue
+                    try:
+                        r = tool_remediate_control(
+                            {"control_id": cid, "tenant_id": t,
+                             "confidence": 0.95, "host": host,
+                             "timeout": 300})
+                        t_run["results"][cid] = {
+                            "status": r.get("status"),
+                            "reason": r.get("reason")}
+                    except Exception as exc:
+                        t_run["results"][cid] = {"error": repr(exc)}
+            if t_run.get("results") is not None or "skipped" in t_run:
+                t_out[host] = t_run
+        if t_out:
+            out[t] = t_out
+    return out
+
+
 def _auto_remediate_pass(tenants: List[str], day: str,
                          collect_results: Dict[str, Any],
                          dry_run: bool) -> Dict[str, Any]:
@@ -161,6 +222,12 @@ def main(argv: List[str] | None = None) -> int:
                          "(tenant-gated; requires SOC_AUTO_REMEDIATE=1 or "
                          "this flag). Fixes needing root run via "
                          "sudo -n env (wez must have NOPASSWD sudo)")
+    ap.add_argument("--remediate-fleet", action="store_true",
+                    help="fleet-scale remediation pass: (host, control) "
+                         "pairs failing in the day's scan results are "
+                         "applied ON the host via ssh (requires "
+                         "SOC_AUTO_REMEDIATE_FLEET=1 and a non-empty "
+                         "SOC_AUTO_REMEDIATE_FLEET_HOSTS allowlist)")
     ap.add_argument("--json", action="store_true", help="JSON output")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args(argv)
@@ -241,6 +308,34 @@ def main(argv: List[str] | None = None) -> int:
                                            "counts": r.get("counts")}
                 except Exception as exc:
                     out["recollect"][t] = {"error": repr(exc)}
+
+    # 2c. fleet-scale remediation pass (opt-in:
+    #     SOC_AUTO_REMEDIATE_FLEET=1 or --remediate-fleet + host allowlist)
+    fleet_enabled = args.remediate_fleet or \
+        os.environ.get("SOC_AUTO_REMEDIATE_FLEET", "0") == "1"
+    out["remediate_fleet"] = {"enabled": fleet_enabled}
+    fleet_applied_any = False
+    if fleet_enabled and not args.dry_run:
+        out["remediate_fleet"].update(_fleet_remediation_pass(
+            tenants, args.day, dry_run=False))
+        for v in out["remediate_fleet"].values():
+            if isinstance(v, dict):
+                for r in (v.get("results") or {}).values():
+                    if (isinstance(r, dict) and
+                            r.get("status") == "applied"):
+                        fleet_applied_any = True
+        if fleet_applied_any:
+            out["recollect_fleet"] = {}
+            for t in tenants:
+                try:
+                    r = tool_collect_evidence({"tenant_id": t, "day": args.day})
+                    out["recollect_fleet"][t] = {"ok": bool(r.get("ok")),
+                                                 "counts": r.get("counts")}
+                except Exception as exc:
+                    out["recollect_fleet"][t] = {"error": repr(exc)}
+    elif args.dry_run and fleet_enabled:
+        out["remediate_fleet"].update(_fleet_remediation_pass(
+            tenants, args.day, dry_run=True))
 
     # 3. scores for all tenants
     if args.dry_run:

@@ -212,12 +212,15 @@ def _collect_from_audit_log(audit: List[Dict[str, Any]],
         # E2 trail
         sdr = extra.get("stig_remediate_applied")
         if isinstance(sdr, dict) and _cid_match(cid, sdr.get("control_id")):
+            # status by rc (2026-09-14): a FAILED apply (rc!=0) must not
+            # grade as pass — was kind-based (always pass) before.
             out.append({
                 "source": "audit_log",
                 "kind": "stig_remediate_applied",
                 "ts": r.get("ts"),
                 "summary": r.get("input_summary"),
                 "outcome": r.get("outcome"),
+                "status": "ok" if (sdr.get("rc") or 0) == 0 else "fail",
                 "source_ref": {"runId": r.get("runId"),
                                 "agent_id": r.get("agent_id")},
                 "payload": sdr,
@@ -371,8 +374,10 @@ def _derive_status(control: Dict[str, Any],
             return "manual_review"
         return "manual_review"  # even automated controls without
                                 # evidence are manual until proven
-    has_pass = any(e.get("status") == "ok" or e.get("kind")
-                   in ("stig_remediate_applied", "snapshot")
+        # status-driven (2026-09-14): applied rows now carry ok/fail by rc,
+    # so a failed apply (rc!=0) no longer grades as pass. Snapshot items
+    # grade by apply_rc/pre_probe_rc. Rows without status are neutral.
+    has_pass = any(e.get("status") == "ok"
                    for e in evidence)
     # stig_evidence rows are STIG findings — non-compliance evidence
     # until a remediation pass confirms otherwise (2026-09-13: the
@@ -681,6 +686,15 @@ def _smoke() -> int:
          "outcome": "ok", "extra": {
              "stig_remediate_refused": {"control_id": "AC.L2-3.1.005",
                                           "reason": "low conf"}}},
+        # E2 FAILED apply (rc=1) for AC.L1-3.1.003 — must grade fail,
+        # not pass (2026-09-14: applied rows are status-graded by rc)
+        {"ts": "2026-08-08T10:02:00.000+00:00",
+         "runId": "stig-AC.L1-3.1.003-ccc", "agent_id": "soc-stig-remediate",
+         "tenant_id": "example-soc", "input_kind": "stig_remediate_apply",
+         "input_summary": "apply fix for AC.L1-3.1.003",
+         "outcome": "error", "extra": {
+             "stig_remediate_applied": {"control_id": "AC.L1-3.1.003",
+                                          "rc": 1}}},
     ]
     with open(audit, "w") as f:
         for r in audit_lines:
@@ -729,11 +743,18 @@ def _smoke() -> int:
     assert au["evidence_count"] >= 1, au
 
     ac = next((c for c in r["controls"] if c["control_id"] == "AC.L2-3.1.005"), None)
-    if ac is not None:  # AC.L2-3.1.005 is L2-only; only in example-soc
+    # refused rows are neutral since 2026-09-14 (a refusal is a policy
+    # decision, not measured non-compliance) -> manual_review
+    if ac is not None:
         # refused rows are neutral since 2026-09-14 (a refusal is a policy
         # decision, not measured non-compliance) -> manual_review
         assert ac["status"] == "manual_review", \
             f"AC.L2-3.1.005 should be manual_review: {ac}"
+    # failed apply (rc=1) grades FAIL, never pass (2026-09-14)
+    ac3 = next((c for c in r["controls"] if c["control_id"] == "AC.L1-3.1.003"), None)
+    if ac3 is not None:
+        assert ac3["status"] == "fail", \
+            f"AC.L1-3.1.003 (failed apply rc=1) should be fail: {ac3}"
 
     # 2. list_evidence
     r = tool_list_evidence({"tenant_id": "example-soc", "day": "2026-08-08"})
