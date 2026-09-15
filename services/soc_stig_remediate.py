@@ -343,6 +343,7 @@ def _run_on(ctx: Optional[Dict[str, Any]], cmd: str,
     if os.environ.get("SOC_REMEDIATION_DRY_RUN", "0") == "1":
         return 0, "<dry_run>", ""
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+           "-o", "StrictHostKeyChecking=accept-new",
            "-p", str(ctx.get("port") or 22),
            f"{ctx.get('user') or 'wez'}@{ctx['ip']}", "sudo -n bash -s"]
     try:

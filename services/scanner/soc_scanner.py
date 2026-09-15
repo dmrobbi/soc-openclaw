@@ -637,6 +637,31 @@ def _default_tenant() -> Optional[str]:
         return None
 
 
+def _local_agent_row() -> Optional[Dict[str, Any]]:
+    """Synthetic agent row for the SOC host itself (the manager is
+    agent 000 and fleet_agents() excludes it by design — but the SOC
+    host is the most important asset to scan). Platform detected from
+    /etc/os-release."""
+    import socket as _socket
+    platform = ""
+    version = ""
+    try:
+        for line in open("/etc/os-release"):
+            k, _, v = line.partition("=")
+            v = v.strip().strip('"')
+            if k == "ID":
+                platform = v
+            elif k == "VERSION_ID":
+                version = v
+    except OSError:
+        return None
+    if not platform:
+        return None
+    return {"id": "000", "name": _socket.gethostname(),
+            "ip": "127.0.0.1", "platform": platform.lower(),
+            "os_version": version}
+
+
 def _tasklog():
     """Lazy services/soc_tasklog (best-effort; None when unavailable)."""
     try:
@@ -784,6 +809,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.fleet:
         agents = [a for a in fleet_agents() if _family(a["platform"])]
+        # include the SOC host itself (agent 000 is excluded from the
+        # fleet list; scan it locally via ssh loopback)
+        local = _local_agent_row()
+        if local and _family(local["platform"]) and \
+                not any(a.get("name") == local["name"] for a in agents):
+            agents.append(local)
         if not agents:
             print(json.dumps({"ok": False,
                               "error": "no scannable agents (family resolved)"}))
@@ -802,6 +833,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         row = {"id": "", "name": args.host, "ip": args.host_ip,
                "platform": args.family or "",
                "os_version": args.os_version or ""}
+    if row is None:
+        # the SOC host itself is agent 000 (excluded from the fleet
+        # list) — resolve the local host by hostname
+        local = _local_agent_row()
+        if local and args.host in (local["name"], local["id"], "local"):
+            row = local
     if row is None:
         return emit({"ok": False,
                      "error": f"host {args.host!r} not in fleet; "
