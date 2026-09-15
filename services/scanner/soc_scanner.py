@@ -12,9 +12,19 @@ Orchestrates OpenSCAP scans of managed hosts via oscap-ssh:
   - individual: scan_host(agent) — one host
   - fleet: scan_fleet(agents) — every reachable managed host, parallel
 
+Privilege mode (2026-09-15): before scanning, the target is probed with
+`ssh -o BatchMode=yes <user>@<host> 'sudo -n true'`. When passwordless
+sudo is available the eval runs detached as `sudo -n oscap` on the
+target (remote mktemp dir, nohup+poll, results fetched back) so checks
+that read root-only state (audit log files 0600, /var/log/audit dir —
+AU-9 / CMMC AU.L1-3.3.003) verify instead of false-failing. Hosts
+without passwordless sudo fall back to the plain user-mode oscap-ssh
+scan above; a missing sudo never fails the scan. SOC_SCAN_SUDO=0 forces
+the legacy path.
+
 Requires on the TARGET host: the `oscap` binary (deploy/openscap-setup.sh
 installs openscap-scanner + SSG). The datastream file is read LOCALLY
-and pushed to the target by oscap-ssh; it must exist on the SOC host.
+and pushed to the target; it must exist on the SOC host.
 
 Results are parsed per-rule, mapped to CMMC controls through the SSG
 rules' NIST 800-53 references (plus the 800-53 -> CMMC alias table in
@@ -37,9 +47,11 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -61,6 +73,17 @@ C2_URL = os.environ.get("SOC_MANAGER_MCP_URL",
                         "http://127.0.0.1:8767").rstrip("/")
 C1_URL = os.environ.get("SOC_WAZUH_MCP_URL",
                         "http://127.0.0.1:8766").rstrip("/")
+
+# Root-mode scans: run remote oscap via `sudo -n` so checks that read
+# root-only state (audit log files 0600, /var/log/audit 0750 — AU-9
+# rules) verify instead of false-failing under the ssh user (2026-09-15,
+# wez request). SOC_SCAN_SUDO=0 forces the legacy user-mode oscap-ssh
+# path. Hosts are probed first; a missing sudo falls back silently.
+SUDO_SCAN_ENABLED = os.environ.get(
+    "SOC_SCAN_SUDO", "1").strip().lower() not in ("0", "false", "no", "off")
+_SSH_OPTS = ["-o", "BatchMode=yes",
+             "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "ConnectTimeout=15"]
 
 # family -> (datastream filename, profile id). Ubuntu ships CIS
 # profiles only (no DISA STIG profile in the SSG ubuntu DS); RHEL ships
@@ -145,10 +168,165 @@ def _family(platform: str) -> Optional[str]:
     return None
 
 
+# ---- root-mode (sudo) remote scan ------------------------------------------
+
+def _ssh_base(ip: str) -> List[str]:
+    return ["ssh", *_SSH_OPTS, "-p", SSH_PORT, f"{SCAN_USER}@{ip}"]
+
+
+def _scp_base(ip: str) -> List[str]:
+    return ["scp", *_SSH_OPTS, "-P", SSH_PORT]
+
+
+def _sudo_available(ip: str) -> bool:
+    """Passwordless-sudo probe: `ssh <user>@<ip> sudo -n true` must exit
+    0 in BatchMode. Read-only; any failure (no key, sudoers denial,
+    unreachable host) simply means "use the plain user scan" — never an
+    error."""
+    if not ip:
+        return False
+    try:
+        proc = subprocess.run(_ssh_base(ip) + ["sudo -n true"],
+                              capture_output=True, text=True, timeout=30)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _sudo_mode_command(ip: str, prof: str,
+                       tmp: str = "/tmp/tmp.XXXXXXXXXX") -> str:
+    """Human-readable sudo-mode eval command (dry-run/log display)."""
+    return (f"ssh {SCAN_USER}@{ip} \"nohup sudo -n oscap xccdf eval "
+            f"--profile {prof} --results {tmp}/results.xml "
+            f"--report {tmp}/report.html {tmp}/ds.xml\"")
+
+
+def _looks_like_sudo_denial(*texts: str) -> bool:
+    blob = "\n".join(t or "" for t in texts).lower()
+    markers = ("a password is required", "not allowed to execute",
+               "sorry, user", "command not allowed", "no tty present")
+    return any(m in blob for m in markers)
+
+
+def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
+                      prof: str, ds_path: str, results_xml: Path,
+                      report_html: Path) -> Dict[str, Any]:
+    """Root-mode eval on `ip`: push the DS (scp) into a remote
+    `mktemp -d /tmp/tmp.XXXXXXXXXX`, launch the eval DETACHED as
+    `nohup sudo -n sh -c 'oscap xccdf eval ...; echo $? > rc' &` so an
+    ssh-coupled kill cannot orphan the remote oscap (2026-09-13 lesson),
+    poll for the rc file, fetch results/report back with `sudo -n cat`
+    (results are root-owned; cat is immune to restrictive root umasks
+    that would break an scp fetch), then clean up. Mirrors the oscap-ssh
+    remote-temp pattern; oscap itself runs under sudo so root-only
+    checks verify. Returns scan_mode "sudo", or "sudo-fallback-user"
+    when sudo is denied at eval time (caller retries user-mode)."""
+    tmp = ""
+    try:
+        mk = subprocess.run(
+            _ssh_base(ip) + ["mktemp -d /tmp/tmp.XXXXXXXXXX"],
+            capture_output=True, text=True, timeout=30)
+        if mk.returncode != 0 or not mk.stdout.strip():
+            return {"ok": False, "host": name, "scan_mode": "sudo",
+                    "error": f"sudo-mode tempdir failed: "
+                             f"{(mk.stderr or '')[-200:]}"}
+        tmp = mk.stdout.strip()
+        q = shlex.quote
+        scp = subprocess.run(
+            _scp_base(ip) + [ds_path, f"{SCAN_USER}@{ip}:{tmp}/ds.xml"],
+            capture_output=True, text=True, timeout=600)
+        if scp.returncode != 0:
+            return {"ok": False, "host": name, "scan_mode": "sudo",
+                    "error": f"sudo-mode DS push failed: "
+                             f"{(scp.stderr or '')[-200:]}"}
+        inner = (f"sudo -n oscap xccdf eval --profile {q(prof)} "
+                 f"--results {q(tmp + '/results.xml')} "
+                 f"--report {q(tmp + '/report.html')} "
+                 f"{q(tmp + '/ds.xml')} "
+                 f">{q(tmp + '/oscap.log')} 2>&1; "
+                 f"echo $? >{q(tmp + '/rc')}")
+        launch = subprocess.run(
+            _ssh_base(ip) + [f"nohup sh -c {q(inner)} "
+                             f">/dev/null 2>&1 </dev/null &"],
+            capture_output=True, text=True, timeout=30)
+        if launch.returncode != 0:
+            if _looks_like_sudo_denial(launch.stderr, launch.stdout):
+                return {"ok": False, "host": name,
+                        "scan_mode": "sudo-fallback-user",
+                        "error": "passwordless sudo unavailable at eval "
+                                 "time; falling back to user scan"}
+            return {"ok": False, "host": name, "scan_mode": "sudo",
+                    "error": f"sudo-mode launch failed: "
+                             f"{(launch.stderr or '')[-200:]}"}
+        deadline = time.monotonic() + SCAN_TIMEOUT
+        rc: Optional[int] = None
+        while time.monotonic() < deadline:
+            time.sleep(10)
+            poll = subprocess.run(
+                _ssh_base(ip) + [f"cat {q(tmp + '/rc')} 2>/dev/null"],
+                capture_output=True, text=True, timeout=30)
+            if poll.returncode == 0 and poll.stdout.strip():
+                try:
+                    rc = int(poll.stdout.strip().splitlines()[0])
+                except ValueError:
+                    rc = None
+                break
+        log = subprocess.run(
+            _ssh_base(ip) + [f"tail -c 800 {q(tmp + '/oscap.log')} "
+                             f"2>/dev/null"],
+            capture_output=True, text=True, timeout=30)
+        logtxt = log.stdout or ""
+        if _looks_like_sudo_denial(logtxt, log.stderr):
+            return {"ok": False, "host": name,
+                    "scan_mode": "sudo-fallback-user",
+                    "error": "passwordless sudo denied for oscap on "
+                             "target; falling back to user scan",
+                    "stdout_tail": logtxt[-800:]}
+        if rc is None:
+            return {"ok": False, "host": name, "scan_mode": "sudo",
+                    "error": f"sudo-mode scan timed out after "
+                             f"{SCAN_TIMEOUT}s",
+                    "stdout_tail": logtxt[-800:]}
+        # results/report are written by root under sudo; read them back
+        # with `sudo -n cat` (scp as wez could hit a restrictive umask).
+        fetched = {}
+        for key, rpath, lpath in (
+                ("results", f"{tmp}/results.xml", results_xml),
+                ("report", f"{tmp}/report.html", report_html)):
+            with open(lpath, "wb") as fh:
+                fetched[key] = subprocess.run(
+                    _ssh_base(ip) + [f"sudo -n cat {q(rpath)}"],
+                    stdout=fh, stderr=subprocess.PIPE, timeout=300)
+        if fetched["results"].returncode != 0:
+            return {"ok": False, "host": name, "scan_mode": "sudo",
+                    "error": "sudo-mode results fetch failed: "
+                             f"{(fetched['results'].stderr or b'').decode('utf-8', 'replace')[-200:]}"}
+        ok = rc in (0, 1, 2)  # 0 pass, 1/2 = findings found (still fine)
+        return {"ok": ok, "host": name, "agent_id": agent.get("id"),
+                "returncode": rc, "ds_path": ds_path,
+                "scan_mode": "sudo",
+                "results_path": (str(results_xml)
+                                 if results_xml.exists() else None),
+                "report_path": (str(report_html)
+                                if report_html.exists() else None),
+                "stdout_tail": logtxt[-800:],
+                "stderr_tail": (fetched["results"].stderr or b'')
+                               .decode("utf-8", "replace")[-400:]}
+    finally:
+        if tmp:
+            try:
+                subprocess.run(_ssh_base(ip) + [f"rm -rf {shlex.quote(tmp)}"],
+                               capture_output=True, timeout=30)
+            except Exception:
+                pass
+
+
 def scan_host(agent: Dict[str, Any], day: str,
               profile: Optional[str] = None,
               dry_run: bool = False) -> Dict[str, Any]:
-    """Run one OpenSCAP XCCDF eval on `agent` via oscap-ssh."""
+    """Run one OpenSCAP XCCDF eval on `agent`. Prefers the detached
+    `sudo -n oscap` flow over ssh when the target has passwordless sudo
+    (root-only checks verify); otherwise plain user-mode oscap-ssh."""
     name = agent.get("name") or agent.get("id") or "?"
     ip = agent.get("ip") or ""
     family = _family(agent.get("platform") or "")
@@ -185,19 +363,34 @@ def scan_host(agent: Dict[str, Any], day: str,
         str(ds),
     ]
     if dry_run:
-        return {"ok": True, "host": name, "dry_run": True,
-                "family": family, "profile": prof, "ds_path": ds_path,
-                "command": " ".join(cmd)}
+        out = {"ok": True, "host": name, "dry_run": True,
+               "family": family, "profile": prof, "ds_path": ds_path,
+               "command": " ".join(cmd)}
+        if ip and SUDO_SCAN_ENABLED:
+            out["sudo_command"] = _sudo_mode_command(ip, prof)
+        return out
+    # Privilege mode: checks that read root-only state (audit log file
+    # permissions etc.) false-FAIL when oscap runs as the ssh user. Prefer
+    # the detached `sudo -n oscap` flow when the probe says passwordless
+    # sudo is available; fall back to the plain user scan (oscap-ssh)
+    # otherwise — a missing sudo never fails the scan (2026-09-15).
+    mode = "user"
+    if ip and SUDO_SCAN_ENABLED and _sudo_available(ip):
+        sudo_out = _sudo_remote_scan(agent, name, ip, prof, str(ds),
+                                     results_xml, report_html)
+        if sudo_out.get("scan_mode") != "sudo-fallback-user":
+            return sudo_out
+        mode = "sudo-fallback-user"
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=SCAN_TIMEOUT)
         rc = proc.returncode
         ok = rc in (0, 1, 2)  # 0 pass, 1/2 = findings found (still fine)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "host": name,
+        return {"ok": False, "host": name, "scan_mode": mode,
                 "error": f"scan timed out after {SCAN_TIMEOUT}s"}
     return {"ok": ok, "host": name, "agent_id": agent.get("id"),
-            "returncode": rc, "ds_path": ds_path,
+            "returncode": rc, "ds_path": ds_path, "scan_mode": mode,
             "results_path": str(results_xml) if results_xml.exists() else None,
             "report_path": str(report_html) if report_html.exists() else None,
             "stdout_tail": (proc.stdout or "")[-800:],
@@ -607,7 +800,8 @@ def scan_fleet(agents: List[Dict[str, Any]], tenant_id: str, day: str,
                 specs.append({"host": str(res.get("host")),
                               "results": str(res["results_path"]),
                               "ds": str(res.get("ds_path") or ""),
-                              "tenant": tenant_id})
+                              "tenant": tenant_id,
+                              "scan_mode": str(res.get("scan_mode") or "")})
     if dry_run:
         out["counts"] = {"scanned": len(out["scans"]),
                          "errors": len(out["errors"]),
