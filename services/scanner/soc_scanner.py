@@ -493,10 +493,22 @@ def _specs_from_day(day: str, manifest_path: Optional[str] = None
                               "tenant": str(row.get("tenant") or "")})
         except Exception:
             specs = []
-    if not specs:
-        for rp in sorted(day_dir.glob("results-*.xml")):
-            specs.append({"host": rp.stem[len("results-"):],
-                          "results": str(rp), "ds": "", "tenant": ""})
+    # union with the on-disk results files (2026-09-15): manifests can
+    # lag the disk — e.g. results fetched for a host after the last
+    # collect. Without the union those hosts are invisible to
+    # collect/attribution (RPI42's 09-15 scan was dropped this way).
+    seen_files = {Path(s["results"]).name for s in specs}
+    seen_hosts = {s["host"] for s in specs}
+    for rp in sorted(day_dir.glob("results-*.xml")):
+        if rp.name in seen_files:
+            continue
+        host = rp.stem[len("results-"):]
+        if host in seen_hosts:
+            continue
+        specs.append({"host": host, "results": str(rp), "ds": "",
+                      "tenant": ""})
+        seen_files.add(rp.name)
+        seen_hosts.add(host)
     out = []
     for spec in specs:
         if not spec["ds"] or not Path(spec["ds"]).exists():
