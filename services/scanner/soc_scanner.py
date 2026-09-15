@@ -368,6 +368,53 @@ def merge_results(specs: List[Dict[str, str]], tenant_id: str, day: str,
             "evidence_counts": counts, "skipped": skipped}
 
 
+def host_control_status(day: str, tenant_id: Optional[str] = None,
+                        manifest_path: Optional[str] = None
+                        ) -> Dict[str, Any]:
+    """Per-host per-control attribution from the day's scan results.
+    The merged evidence loses which host failed what — this re-derives
+    it (Phase 1.4 prerequisite): for each host with archived results,
+    roll its rule rows up to controls and report per-control status.
+    Fleet-scale remediation keys on the failing (host, control) pairs.
+    Read-only."""
+    specs = _specs_from_day(day, manifest_path)
+    if not specs:
+        return {"ok": False,
+                "error": f"no scan results found for day {day} under "
+                         f"{SCAN_RESULTS_DIR / day}"}
+    if tenant_id is None:
+        for s in specs:
+            if s.get("tenant"):
+                tenant_id = s["tenant"]
+                break
+    if tenant_id is None:
+        tenant_id = _default_tenant()
+    if tenant_id is None:
+        return {"ok": False, "error": "no tenant resolved"}
+    from soc_stig import tool_applicable_for_tenant
+    applicable = {c["id"] for c in
+                  tool_applicable_for_tenant({"tenant_id": tenant_id})
+                  ["controls"]}
+    hosts: Dict[str, Any] = {}
+    for spec in specs:
+        if not spec["ds"] or not Path(spec["ds"]).exists():
+            continue
+        try:
+            rows = parse_rule_results(spec["results"])
+        except Exception:
+            continue
+        refs = parse_ds_rule_nist(spec["ds"])
+        rollup = _control_rollup(rows, refs, applicable)
+        controls = {cid: s["status"] for cid, s in
+                    sorted(rollup.items())}
+        hosts[spec["host"]] = {
+            "controls": controls,
+            "failed": [cid for cid, s in controls.items()
+                       if s == "fail"],
+        }
+    return {"ok": True, "day": day, "tenant": tenant_id, "hosts": hosts}
+
+
 def collect_day(day: str, tenant_id: Optional[str] = None,
                 manifest_path: Optional[str] = None,
                 score: bool = False, dry_run: bool = False
@@ -431,21 +478,15 @@ def collect_day(day: str, tenant_id: Optional[str] = None,
     return out
 
 
-def write_evidence(tenant_id: str, rule_rows: List[Dict[str, Any]],
-                   rule_refs: Dict[str, List[str]], day: str,
-                   host: str) -> Dict[str, int]:
-    """Map rule results -> CMMC controls -> evidence store. A control
-    fails when any mapped rule fails; passes only when it has mapped
-    rules and every one passes (partial coverage stays manual_review
-    unless a failing rule exists). Returns per-control status counts.
-    """
-    from soc_evidence import (_CONTROL_ALIASES, _evidence_path,
-                              _write_evidence)
-    from soc_stig import tool_applicable_for_tenant
-    applicable = {c["id"] for c in
-                  tool_applicable_for_tenant({"tenant_id": tenant_id})
-                  ["controls"]}
-
+def _control_rollup(rule_rows: List[Dict[str, Any]],
+                    rule_refs: Dict[str, List[str]],
+                    applicable: set) -> Dict[str, Dict[str, Any]]:
+    """Map rule results -> CMMC controls (800-53 refs + aliases).
+    Shared by write_evidence and host_control_status (per-host
+    attribution) — one source of truth for the rollup. A control fails
+    when any mapped rule fails; passes only when it has mapped rules
+    and every one passes; partial coverage stays manual_review."""
+    from soc_evidence import _CONTROL_ALIASES
     by_control: Dict[str, Dict[str, Any]] = {}
     for row in rule_rows:
         refs = []
@@ -466,15 +507,31 @@ def write_evidence(tenant_id: str, rule_rows: List[Dict[str, Any]],
                     slot["fails"] += 1
                 elif row["result"] in ("pass", "fixed"):
                     slot["passes"] += 1
+    for cid, slot in by_control.items():
+        slot["status"] = ("fail" if slot["fails"] else
+                          ("pass" if slot["passes"] else "manual_review"))
+    return by_control
+
+
+def write_evidence(tenant_id: str, rule_rows: List[Dict[str, Any]],
+                   rule_refs: Dict[str, List[str]], day: str,
+                   host: str) -> Dict[str, int]:
+    """Map rule results -> CMMC controls -> evidence store. A control
+    fails when any mapped rule fails; passes only when it has mapped
+    rules and every one passes (partial coverage stays manual_review
+    unless a failing rule exists). Returns per-control status counts.
+    """
+    from soc_evidence import (_evidence_path, _write_evidence)
+    from soc_stig import tool_applicable_for_tenant
+    applicable = {c["id"] for c in
+                  tool_applicable_for_tenant({"tenant_id": tenant_id})
+                  ["controls"]}
+
+    by_control = _control_rollup(rule_rows, rule_refs, applicable)
 
     counts = {"pass": 0, "fail": 0, "neutral": 0}
     for cid, slot in sorted(by_control.items()):
-        if slot["fails"]:
-            status = "fail"
-        elif slot["passes"]:
-            status = "pass"
-        else:
-            status = "manual_review"
+        status = slot["status"]
         items = [{
             "source": "oscap",
             "kind": "oscap_rule_result",
