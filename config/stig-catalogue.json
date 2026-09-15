@@ -115,7 +115,7 @@
     "high"
    ],
    "check": "systemctl is-active auditd   # or wazuh-manager container running and ingesting syslog/auth.log",
-   "fix": "apt-get install -y auditd && systemctl enable --now auditd",
+   "fix": "apt-get install -y auditd && systemctl enable --now auditd && printf '%s\\n' '-w /etc/passwd -p wa -k identity' '-w /etc/group -p wa -k identity' '-w /etc/sudoers -p wa -k actions' '-w /etc/shadow -p wa -k identity' '-a always,exit -F arch=b64 -S execve -k exec' > /etc/audit/rules.d/50-soc-base.rules && augenrules --load 2>/dev/null || auditctl -R /etc/audit/rules.d/50-soc-base.rules",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -127,7 +127,7 @@
     "nist_800_53": "AU-2"
    },
    "automated": true,
-   "notes": "Prose part of the original fix: ensure Wazuh is ingesting /var/log/auth.log and /var/log/syslog (log shipping). Catalogue cleanup 2026-09-14: fix normalized to a pure shell command."
+   "notes": "Prose: ensure log shipping (Wazuh). 2026-09-15 deepened: installing auditd alone left the audit-coverage rules failing \u2014 a base ruleset (identity/sudo/exec watchers) is now written and loaded."
   },
   {
    "id": "AU.L1-3.3.002",
@@ -167,7 +167,7 @@
     "high"
    ],
    "check": "ls -la /var/log/audit/   # verify 0600 or 0640, owned by root; verify audit logs are forwarded off-host (Wazuh manager / SIEM).",
-   "fix": "chmod 0600 /var/log/audit/*.log 2>/dev/null; chown root:root /var/log/audit",
+   "fix": "chmod 0600 /var/log/audit/*.log 2>/dev/null; chown root:root /var/log/audit /var/log/audit/*.log 2>/dev/null; sed -ri 's/^log_group.*/log_group = root/' /etc/audit/auditd.conf 2>/dev/null; systemctl restart auditd 2>/dev/null || true",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -179,7 +179,7 @@
     "nist_800_53": "AU-9"
    },
    "automated": true,
-   "notes": "Prose part of the original fix: configure off-host log shipping (rsyslog, filebeat, or Wazuh agent). Catalogue cleanup 2026-09-14: fix normalized to a pure shell command."
+   "notes": "Prose: configure off-host log shipping. 2026-09-15 deepened: auditd recreates logs with log_group=adm \u2014 the STIG wants root:root, so the fix now also sets log_group=root and restarts auditd (the dir-only chown left files adm-owned)."
   },
   {
    "id": "IA.L1-3.5.001",
@@ -219,7 +219,7 @@
     "high"
    ],
    "check": "Verify password policy enforces complexity + rotation; verify SSH key-based auth is preferred over passwords (PasswordAuthentication no in sshd_config).",
-   "fix": "apt-get install -y libpam-pwquality && sed -ri 's/^#?\\s*minlen.*/minlen = 14/' /etc/security/pwquality.conf",
+   "fix": "apt-get install -y libpam-pwquality && sed -ri 's/^#?\\s*minlen.*/minlen = 14/' /etc/security/pwquality.conf && sed -ri 's/^#?\\s*PASS_MIN_LEN.*/PASS_MIN_LEN 14/' /etc/login.defs",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -232,7 +232,7 @@
     "nist_800_53": "IA-5"
    },
    "automated": true,
-   "notes": "Prose part of the original fix: set PasswordAuthentication no in sshd_config.d \u2014 NOT auto-applied (SSH lockout risk; verify key-based auth first, operator action). Catalogue cleanup 2026-09-14: pwquality complexity settings normalized to shell."
+   "notes": "Prose: disable SSH password auth (operator action \u2014 lockout risk). 2026-09-15 deepened: the SSG rule also checks login.defs PASS_MIN_LEN, not just pwquality.conf."
   },
   {
    "id": "IA.L1-3.5.003",
