@@ -99,6 +99,17 @@ SSG_PROFILES = {
                "xccdf_org.ssgproject.content_profile_cis_server_l2"),
     "centos": ("ssg-centos8-ds.xml",
                "xccdf_org.ssgproject.content_profile_cis_server_l2"),
+    # Rocky 8/9/10 test fleet (evgen-d/e/f, docker on the SOC host).
+    # Newer SSG consolidated the CIS profiles: content_profile_cis =
+    # Level 2 (no separate cis_server_l2 in these DS builds). Version
+    # picks in scan_host (ROCKY_DS_BY_MAJ).
+    "rocky":  ("ssg-rl8-ds.xml",
+               "xccdf_org.ssgproject.content_profile_cis"),
+}
+ROCKY_DS_BY_MAJ = {
+    "8":  ("ssg-rl8-ds.xml",  "xccdf_org.ssgproject.content_profile_cis"),
+    "9":  ("ssg-cs9-ds.xml",  "xccdf_org.ssgproject.content_profile_cis"),
+    "10": ("ssg-rl10-ds.xml", "xccdf_org.ssgproject.content_profile_cis"),
 }
 
 _NS = {"c": "http://checklists.nist.gov/xccdf/1.2"}
@@ -158,6 +169,18 @@ def fleet_agents() -> List[Dict[str, Any]]:
         for row in rows:
             if row["platform"] == "ubuntu":
                 row["os_version"] = by_name.get(row["name"], "")
+    # config-driven extras (2026-09-15): docker-hosted fleet members that
+    # cannot run Wazuh agents (the packages CDN 403s) —
+    # SOC_FLEET_EXTRA='name:ip:platform:os_version,...'
+    for row in [r.strip() for r in
+                os.environ.get("SOC_FLEET_EXTRA", "").split(",")
+                if r.strip()]:
+        parts = row.split(":")
+        if len(parts) >= 2:
+            rows.append({"id": "x-" + parts[0], "name": parts[0],
+                         "ip": parts[1],
+                         "platform": parts[2] if len(parts) > 2 else "",
+                         "os_version": parts[3] if len(parts) > 3 else ""})
     return rows
 
 
@@ -343,6 +366,12 @@ def scan_host(agent: Dict[str, Any], day: str,
         if maj == "24" and (SSG_DIR / "ssg-ubuntu2404-ds.xml").exists():
             ds_name = "ssg-ubuntu2404-ds.xml"
             default_profile = "xccdf_org.ssgproject.content_profile_stig"
+    # version-aware rocky pick: rl8 / cs9 / rl10 per major version
+    if family == "rocky":
+        ver = str(agent.get("os_version") or "")
+        maj = re.match(r"\s*(\d+)", ver).group(1) if re.match(r"\s*(\d+)", ver) else ""
+        if maj in ROCKY_DS_BY_MAJ:
+            ds_name, default_profile = ROCKY_DS_BY_MAJ[maj]
     ds = SSG_DIR / ds_name
     if not ds.exists():
         return {"ok": False, "host": name,
