@@ -318,9 +318,20 @@ def main(argv: List[str] | None = None) -> int:
     if fleet_enabled and not args.dry_run:
         out["remediate_fleet"].update(_fleet_remediation_pass(
             tenants, args.day, dry_run=False))
+        # _fleet_remediation_pass nests results at HOST level:
+        # out[tenant] = {host: {"results": {cid: {"status": ...}}}}.
+        # The 2026-09-16 detection bug: this loop read v.get("results")
+        # at the TENANT level (the local pass's shape), so applied
+        # fleet remediations were never detected, the post-remediation
+        # re-collect never ran, and the stale scan-merge FAIL rows
+        # stood for scoring (bedimsecurity regressed 20.8 -> 4.2).
         for v in out["remediate_fleet"].values():
-            if isinstance(v, dict):
-                for r in (v.get("results") or {}).values():
+            if not isinstance(v, dict):
+                continue  # "allowlist" (list) / "enabled" (bool)
+            for hv in v.values():
+                if not isinstance(hv, dict):
+                    continue
+                for r in (hv.get("results") or {}).values():
                     if (isinstance(r, dict) and
                             r.get("status") == "applied"):
                         fleet_applied_any = True
