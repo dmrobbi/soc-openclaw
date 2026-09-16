@@ -372,6 +372,7 @@ def scan_host(agent: Dict[str, Any], day: str,
         maj = re.match(r"\s*(\d+)", ver).group(1) if re.match(r"\s*(\d+)", ver) else ""
         if maj in ROCKY_DS_BY_MAJ:
             ds_name, default_profile = ROCKY_DS_BY_MAJ[maj]
+            ds_name = f"ssg-{maj == '8' and 'rl8' or maj == '9' and 'cs9' or 'rl10'}-ds.xml"
     ds = SSG_DIR / ds_name
     if not ds.exists():
         return {"ok": False, "host": name,

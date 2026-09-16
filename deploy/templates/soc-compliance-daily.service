@@ -37,6 +37,8 @@ Environment="SOC_AUDIT_LOG=/home/__SOC_USER__/.openclaw-wazuh/audit_log.jsonl"
 # with a safe shell fix get applied (tenant-gated, idempotent, fully
 # audited). Set to 0 to collect+score only.
 Environment="SOC_AUTO_REMEDIATE=1"
+Environment="SOC_AUTO_REMEDIATE_FLEET=1"
+Environment="SOC_AUTO_REMEDIATE_FLEET_HOSTS=evgen-a,evgen-b,evgen-c"
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc_compliance_daily.py
 StandardOutput=journal
 StandardError=journal
