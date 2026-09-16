@@ -139,3 +139,24 @@ per-host tallies, evidence counts, and the recomputed score.
   (minlen = 14 + libpam-pwquality installed). The nightly
   auto-remediation pass stays LOCAL-only by design; fleet remediation
   is operator-triggered for now.
+
+## Fleet-scale nightly remediation (Phase 1.3+, 2026-09-14/15)
+
+The nightly `soc-compliance-daily` runs two gated remediation passes
+between collect and scoring:
+
+| Env | Gate | What it does |
+|---|---|---|
+| `SOC_AUTO_REMEDIATE=1` | operator | applies safe shell fixes for controls that are **not pass today** on the SOC host itself (thing1) |
+| `SOC_AUTO_REMEDIATE_FLEET=1` | operator | for every **(host, control)** failing in the day's archived scans, applies the fix **on that host** via `ssh <SCAN_USER>@<ip> 'sudo -n bash -s'` |
+| `SOC_AUTO_REMEDIATE_FLEET_HOSTS=` | host allowlist | fail-closed: empty = no fleet hosts; comma-separated names to opt hosts in |
+
+Per-host attribution (`soc_scanner.py --collect` → `host_control_status`)
+derives the failing (host, control) pairs from the day's scan results
+XMLs — the merge loses this, the attribution keeps it. The fleet pass
+runs before the score step so remediation evidence is graded in-run.
+
+Both gates ship **enabled** in the unit template (2026-09-14/15),
+because every fix is idempotent, audited (snapshot + audit row +
+remediation log) and tenant-gated; set both to `0` for a collect +
+rescore-only night.
