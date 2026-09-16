@@ -110,7 +110,7 @@
         card("Unknown status", s.unknown_status || 0, "dim"),
       ),
       el("div", { class: "section" },
-        fleetTable(rows, stigByHost),
+        fleetTable(rows, stigByHost, cveByHost),
       ),
       el("p", { class: "muted" },
         "Source: C2 manager-mcp (",
@@ -122,8 +122,11 @@
     return nodes;
   }
 
-  function fleetTable(rows, stigByHost) {
+  function fleetTable(rows, stigByHost, cveByHost) {
     stigByHost = stigByHost || {};
+    cveByHost = cveByHost || {};  // 2026-09-16: passed in by pageFleet —
+    // it was only a pageFleet local before, so the CVE column raised
+    // ReferenceError and the whole /fleet page rendered an empty shell.
     if (!rows.length) {
       return el("p", { class: "empty" },
         "No agents returned by C2 manager-mcp. ",
