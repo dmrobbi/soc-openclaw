@@ -547,6 +547,102 @@
     ];
   }
 
+  // OpenSCAP control attribution + Remediate buttons (fleet host page).
+  // Failing (host, control) pairs from the latest archived scan day;
+  // applies go through the mutation-gated remediate_control tool.
+  function hostControlsSection(host, controls, mutationsEnabled) {
+    const head = el("div", { class: "section" },
+      el("h2", null, "OpenSCAP controls" +
+        (controls && controls.day ? " (scan " + controls.day + ")" : "")));
+    if (!controls || controls.error) {
+      head.appendChild(el("p", { class: "muted" },
+        "No OpenSCAP control attribution for this host yet — the latest " +
+        "scan day has no archived results for it." +
+        (controls && controls.error ? " (" + controls.error + ")" : "")));
+      return head;
+    }
+    const failed = controls.failed_meta || [];
+    if (!failed.length) {
+      head.appendChild(el("p", { class: "muted" },
+        "No failing controls attributed on " + controls.day + " \u2713"));
+      return head;
+    }
+    head.appendChild(el("p", { class: "muted" },
+      String(failed.length) + " failing of " +
+      String(controls.total || "?") + " applicable \u00b7 tenant " +
+      String(controls.tenant || "?") +
+      " \u00b7 Remediate applies the catalogue fix via SSH as remote root, " +
+      "then re-collects evidence and recomputes the score."));
+    if (!mutationsEnabled) {
+      head.appendChild(el("p", { class: "alert warn" },
+        "Manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 " +
+        "not set on soc-manager-mcp) — Remediate is disabled; Dry run " +
+        "still works (read-only)."));
+    }
+    head.appendChild(el("table", null,
+      el("thead", null, el("tr", null,
+        el("th", null, "control"), el("th", null, "title"),
+        el("th", null, "severity"), el("th", null, "action"))),
+      el("tbody", null, ...failed.map(m => {
+        const ctl = m.control_id;
+        const canAuto = !!m.automated;
+        const run = (mode) => async (ev) => {
+          ev.preventDefault();
+          const btn = ev.target;
+          const what = mode === "dry" ? "Dry-run " : "Remediate ";
+          if (!confirm(what + ctl + " on " + host + "?\n" +
+              (mode === "dry"
+                ? "Read-only: validates the tenant gate and that the fix would run."
+                : "Applies the catalogue shell fix via SSH as remote root, then re-collects evidence and recomputes the score.")))
+            return;
+          btn.disabled = true;
+          btn.textContent = mode === "dry" ? "checking…" : "applying…";
+          try {
+            const r = await api("/tools/remediate_control", "POST",
+              { control_id: ctl, tenant_id: controls.tenant,
+                host: host, confidence: 0.95,
+                dry_run: mode === "dry" });
+            const rem = (r && r.remediation) || {};
+            const st = rem.status || (r && r.ok === false ? "error" : "?");
+            if (st === "applied") {
+              btn.textContent = "applied \u2713";
+            } else if (st === "dry_run") {
+              btn.textContent = "dry-run OK \u2713 (gates pass)";
+            } else if (st === "refused") {
+              btn.textContent = "refused: " + String(rem.reason || "?").substring(0, 60);
+            } else if (st === "manual_review") {
+              btn.textContent = "manual review: " + String(rem.reason || "not executable").substring(0, 50);
+            } else {
+              btn.textContent = "failed: " +
+                String((r && r.error) || rem.error || st).substring(0, 60);
+            }
+          } catch (e) {
+            btn.textContent = "failed: " + (e.message || e);
+          }
+          setTimeout(() => {
+            btn.disabled = (mode !== "dry") && (!mutationsEnabled || !canAuto);
+            btn.textContent = mode === "dry" ? "Dry run" : "Remediate";
+          }, 8000);
+        };
+        return el("tr", null,
+          el("td", null, el("code", null, ctl)),
+          el("td", { class: "muted" },
+            (m.title || "").substring(0, 70) || "-"),
+          el("td", null, badge(m.severity || "?")),
+          el("td", null, el("span", { class: "btn-row" },
+            el("button", { class: "btn", onclick: run("dry") }, "Dry run"),
+            el("button", { class: "btn",
+                           disabled: !mutationsEnabled || !canAuto,
+                           title: canAuto ? "Apply the catalogue fix now"
+                             : "Not automatable — manual_review only",
+                           onclick: run("apply") }, "Remediate"),
+            canAuto ? null : el("span", { class: "badge dim" }, "manual"),
+          )),
+        );
+      })),
+    ));
+    return head;
+  }
   async function pageFleetHost(agentId) {
     let data;
     try { data = await api("/tools/fleet_host_view", "POST", { agent_id: agentId }); }
@@ -624,6 +720,7 @@
           ? null
           : el("p", { class: "muted" }, "Note: manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 not set) — the scan buttons will fail until enabled."),
       ),
+      hostControlsSection(a.name || agentId, data.controls, data.mutations_enabled),
       el("div", { class: "section" },
         el("h2", null, "Recent alerts" + (alerts.length ? " (" + alerts.length + ")" : " (none)")),
         alerts.length
