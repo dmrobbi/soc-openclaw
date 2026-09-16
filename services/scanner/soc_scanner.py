@@ -537,7 +537,21 @@ def parse_rule_results(results_xml: str) -> List[Dict[str, Any]]:
 
 
 def parse_ds_rule_nist(ds_path: str) -> Dict[str, List[str]]:
-    """Extract rule_id -> [NIST 800-53 refs] from an SSG datastream."""
+    """Extract rule_id -> [NIST 800-53 refs] from an SSG datastream.
+
+    Datastreams are large (the SSG 2404 DS is ~15 MB); several specs
+    share one DS (a fleet day re-parses the same file per host), so
+    results are cached keyed on (path, mtime_ns, size) — a re-scan
+    rewrites the DS and invalidates the cache naturally."""
+    try:
+        st = os.stat(ds_path)
+    except OSError:
+        st = None  # stat failed — parse anyway, let ET raise
+    key = (str(ds_path), st.st_mtime_ns if st else 0,
+           st.st_size if st else 0)
+    hit = _DS_NIST_CACHE.get(key)
+    if hit is not None:
+        return hit
     root = ET.parse(ds_path).getroot()
     out: Dict[str, List[str]] = {}
     for rule in root.findall(".//c:Rule", _NS):
@@ -551,6 +565,8 @@ def parse_ds_rule_nist(ds_path: str) -> Dict[str, List[str]]:
                 refs.append(m.group(0))
         if refs:
             out[rid] = refs
+    if st is not None and len(_DS_NIST_CACHE) < 32:
+        _DS_NIST_CACHE[key] = out
     return out
 
 
@@ -699,15 +715,20 @@ def merge_results(specs: List[Dict[str, str]], tenant_id: str, day: str,
             "evidence_counts": counts, "skipped": skipped}
 
 
+_DS_NIST_CACHE: Dict[Any, Dict[str, List[str]]] = {}
+
+
 def host_control_status(day: str, tenant_id: Optional[str] = None,
-                        manifest_path: Optional[str] = None
+                        manifest_path: Optional[str] = None,
+                        host: Optional[str] = None
                         ) -> Dict[str, Any]:
     """Per-host per-control attribution from the day's scan results.
     The merged evidence loses which host failed what — this re-derives
     it (Phase 1.4 prerequisite): for each host with archived results,
     roll its rule rows up to controls and report per-control status.
     Fleet-scale remediation keys on the failing (host, control) pairs.
-    Read-only."""
+    `host` filters to one host (the dashboard drill-down parses one
+    results file instead of the whole day). Read-only."""
     specs = _specs_from_day(day, manifest_path)
     if not specs:
         return {"ok": False,
@@ -728,6 +749,8 @@ def host_control_status(day: str, tenant_id: Optional[str] = None,
                   ["controls"]}
     hosts: Dict[str, Any] = {}
     for spec in specs:
+        if host is not None and str(spec.get("host") or "") != host:
+            continue
         if not spec["ds"] or not Path(spec["ds"]).exists():
             continue
         try:

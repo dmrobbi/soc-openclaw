@@ -90,6 +90,7 @@ DASHBOARD_TOOLS = (
     "fleet_status", "fleet_summary",
     "stig_overview", "stig_findings",
     "stig_host_view",
+    "host_control_status",
     "fleet_host_view", "run_scan",
     "run_host_compliance_scan",
     "remediate_control",
@@ -460,6 +461,65 @@ def tool_tickets_list_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
         "ok": False, "error": f"unexpected C3 response: {body!r}"}
 
 
+def tool_host_control_status(args: Dict[str, Any]) -> Dict[str, Any]:
+    """host_control_status(day=None, tenant_id=None, host=None)
+    -> per-host per-control attribution from the day's archived
+    OpenSCAP scan results.
+
+    Read-only wrapper over services/scanner/soc_scanner
+    .host_control_status(). `day` defaults to the most recent day
+    (today, stepping back up to 7 days) with archived results.
+    Failing controls are enriched with catalogue metadata (title,
+    severity, automated) so the UI can render Remediate buttons —
+    fleet remediation keys on the failing (host, control) pairs."""
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    scanner_dir = os.path.join(soc_dir, "scanner")
+    for p in (soc_dir, scanner_dir):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    from soc_scanner import host_control_status as _hcs
+    import datetime as _dt
+    day_arg = args.get("day")
+    res = None
+    last_err = None
+    if day_arg:
+        res = _hcs(str(day_arg), tenant_id=args.get("tenant_id"),
+                   host=args.get("host"))
+    else:
+        today = _dt.datetime.now(_dt.timezone.utc).date()
+        for back in range(7):
+            cand = str(today - _dt.timedelta(days=back))
+            res = _hcs(cand, tenant_id=args.get("tenant_id"),
+                       host=args.get("host"))
+            if res.get("ok") and res.get("hosts"):
+                break
+            last_err = res.get("error") or f"no results for {cand}"
+            res = None
+    if not res or not res.get("ok"):
+        return {"ok": False, "tool": "host_control_status",
+                "error": (res or {}).get("error")
+                or f"no scan results in the last 7 days (last: {last_err})"}
+    # Enrich failing controls with catalogue metadata so the UI can
+    # label rows and disable buttons for non-automated controls.
+    meta: Dict[str, Any] = {}
+    try:
+        from soc_stig import tool_applicable_for_tenant
+        for c in tool_applicable_for_tenant(
+                {"tenant_id": res.get("tenant")}).get("controls", []):
+            meta[c.get("id")] = c
+    except Exception:
+        pass  # unknown tenant / catalogue hiccup — ship ids without meta
+    for h in (res.get("hosts") or {}).values():
+        h["failed_meta"] = [
+            {"control_id": cid,
+             "title": (meta.get(cid) or {}).get("title"),
+             "severity": (meta.get(cid) or {}).get("severity"),
+             "automated": bool((meta.get(cid) or {}).get("automated"))}
+            for cid in (h.get("failed") or [])]
+    res["tool"] = "host_control_status"
+    return res
+
+
 def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
     """fleet_host_view(agent_id) -> drill-down for one managed host.
 
@@ -495,6 +555,23 @@ def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
 
     stig = tool_stig_host_view({"host": name})
 
+    # OpenSCAP control attribution for this host from the latest
+    # archived scan day (read-only; feeds the Remediate buttons).
+    host_controls = None
+    try:
+        hcs = tool_host_control_status({"host": name})
+        if hcs.get("ok"):
+            hc = (hcs.get("hosts") or {}).get(name)
+            if hc:
+                host_controls = {
+                    "day": hcs.get("day"),
+                    "tenant": hcs.get("tenant"),
+                    "failed": hc.get("failed") or [],
+                    "failed_meta": hc.get("failed_meta") or [],
+                    "total": len(hc.get("controls") or {})}
+    except Exception as e:
+        host_controls = {"error": repr(e)}
+
     # mutations gate: read the manager's /healthz, which reports the
     # SOC_MANAGER_MCP_ALLOW_MUTATIONS state directly. (2026-09-13 fix:
     # get_manager_info returns raw Wazuh /manager/info data, which has
@@ -510,6 +587,7 @@ def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
         "alerts": alerts,
         "alerts_total": len(alerts),
         "stig": stig,
+        "controls": host_controls,
         "mutations_enabled": mutations,
     }
 
@@ -849,7 +927,10 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
 
     Layers of gating, in order:
       1. C2 /healthz mutations_enabled (SOC_MANAGER_MCP_ALLOW_MUTATIONS)
-         — the same gate as the scan triggers.
+         — the same gate as the scan triggers. SKIPPED for dry_run
+         (2026-09-16): a dry run changes nothing (read-only check),
+         so it may validate the gates while real applies stay
+         mutation-gated.
       2. The tenant routing config: `auto_remediate` must be in
          allowed_actions AND auto_remediation_threshold met AND the
          severity eligible.
@@ -862,24 +943,28 @@ def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
     tid = str(args.get("tenant_id") or "").strip()
     if not cid or not tid:
         raise ValueError("control_id and tenant_id are required")
+    dry = bool(args.get("dry_run"))
     c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
     soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     mcode, mbody = _http_get(f"{c2}/healthz", timeout=5.0)
-    if mcode != 200 or not isinstance(mbody, dict) \
-            or not mbody.get("mutations_enabled"):
+    mutations = bool(mcode == 200 and isinstance(mbody, dict)
+                     and mbody.get("mutations_enabled"))
+    if not mutations and not dry:
         return {"ok": False, "tool": "remediate_control",
                 "error": "mutations disabled on C2 manager "
-                         "(SOC_MANAGER_MCP_ALLOW_MUTATIONS)"}
+                         "(SOC_MANAGER_MCP_ALLOW_MUTATIONS)",
+                "mutations_enabled": False}
     if soc_dir not in sys.path:
         sys.path.insert(0, soc_dir)
     from soc_stig_remediate import tool_remediate_control as _remediate
     res = _remediate({"control_id": cid, "tenant_id": tid,
                       "confidence": args.get("confidence"),
-                      "dry_run": bool(args.get("dry_run")),
+                      "dry_run": dry,
                       "host": args.get("host"),
                       "host_ip": args.get("host_ip")})
     out: Dict[str, Any] = {"ok": True, "tool": "remediate_control",
-                           "remediation": res}
+                           "remediation": res,
+                           "mutations_enabled": mutations}
     if res.get("status") == "applied":
         import datetime as _dt
         day = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
@@ -1312,6 +1397,7 @@ class _Handler(BaseHTTPRequestHandler):
             "stig_overview": tool_stig_overview,
             "stig_findings": tool_stig_findings,
             "stig_host_view": tool_stig_host_view,
+            "host_control_status": tool_host_control_status,
             "fleet_host_view": tool_fleet_host_view,
             "agent_logs": tool_agent_logs,
             "vulnerability_findings": tool_vulnerability_findings,
