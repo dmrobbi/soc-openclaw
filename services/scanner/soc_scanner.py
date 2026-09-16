@@ -81,6 +81,10 @@ C1_URL = os.environ.get("SOC_WAZUH_MCP_URL",
 # path. Hosts are probed first; a missing sudo falls back silently.
 SUDO_SCAN_ENABLED = os.environ.get(
     "SOC_SCAN_SUDO", "1").strip().lower() not in ("0", "false", "no", "off")
+REMEDIATE_TIMEOUT = int(os.environ.get(
+    "SOC_OSCAP_REMEDIATE_TIMEOUT", "1800"))
+_SOC_OSCAP_REMEDIATE = os.environ.get(
+    "SOC_OSCAP_REMEDIATE", "0").strip().lower() not in ("0", "false", "no", "off")
 _SSH_OPTS = ["-o", "BatchMode=yes",
              "-o", "StrictHostKeyChecking=accept-new",
              "-o", "ConnectTimeout=15"]
@@ -233,7 +237,8 @@ def _looks_like_sudo_denial(*texts: str) -> bool:
 
 def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
                       prof: str, ds_path: str, results_xml: Path,
-                      report_html: Path) -> Dict[str, Any]:
+                      report_html: Path, remediate: bool = False
+                      ) -> Dict[str, Any]:
     """Root-mode eval on `ip`: push the DS (scp) into a remote
     `mktemp -d /tmp/tmp.XXXXXXXXXX`, launch the eval DETACHED as
     `nohup sudo -n sh -c 'oscap xccdf eval ...; echo $? > rc' &` so an
@@ -312,10 +317,16 @@ def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
                     "stdout_tail": logtxt[-800:]}
         # results/report are written by root under sudo; read them back
         # with `sudo -n cat` (scp as wez could hit a restrictive umask).
+        # fetch the pre-remediation results (kept as the audit trail
+        # when a remediation pass follows)
+        pre_path = (results_xml.with_name(
+            results_xml.stem + "-pre.xml") if remediate else None)
+        fetches = [("results", f"{tmp}/results.xml", results_xml)]
+        if remediate and pre_path:
+            fetches.append(("results_pre", f"{tmp}/results.xml", pre_path))
+        fetches.append(("report", f"{tmp}/report.html", report_html))
         fetched = {}
-        for key, rpath, lpath in (
-                ("results", f"{tmp}/results.xml", results_xml),
-                ("report", f"{tmp}/report.html", report_html)):
+        for key, rpath, lpath in fetches:
             with open(lpath, "wb") as fh:
                 fetched[key] = subprocess.run(
                     _ssh_base(ip) + [f"sudo -n cat {q(rpath)}"],
@@ -325,6 +336,88 @@ def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
                     "error": "sudo-mode results fetch failed: "
                              f"{(fetched['results'].stderr or b'').decode('utf-8', 'replace')[-200:]}"}
         ok = rc in (0, 1, 2)  # 0 pass, 1/2 = findings found (still fine)
+        extra: Dict[str, Any] = {}
+        if remediate:
+            # DS-native remediation (Phase 1.4b): oscap applies the DS's
+            # own fix scripts for every failed rule, then a fresh eval
+            # grades the post-remediation state as the canonical result.
+            rem_rc: Optional[int] = None
+            post_rc: Optional[int] = None
+            rem_log = ""
+            inner_rem = (f"sudo -n oscap xccdf remediate "
+                         f"--results {q(tmp + '/results-remediated.xml')} "
+                         f"--report {q(tmp + '/remediate-report.html')} "
+                         f"{q(tmp + '/results.xml')} {q(tmp + '/ds.xml')} "
+                         f">{q(tmp + '/remediate.log')} 2>&1; "
+                         f"echo $? >{q(tmp + '/rc2')}")
+            subprocess.run(
+                _ssh_base(ip) + [f"nohup sh -c {q(inner_rem)} "
+                                 f">/dev/null 2>&1 </dev/null &"],
+                capture_output=True, text=True, timeout=30)
+            rdeadline = time.monotonic() + REMEDIATE_TIMEOUT
+            while time.monotonic() < rdeadline:
+                time.sleep(10)
+                poll2 = subprocess.run(
+                    _ssh_base(ip) + [f"cat {q(tmp + '/rc2')} 2>/dev/null"],
+                    capture_output=True, text=True, timeout=30)
+                if poll2.returncode == 0 and poll2.stdout.strip():
+                    try:
+                        rem_rc = int(poll2.stdout.strip().splitlines()[0])
+                    except ValueError:
+                        rem_rc = None
+                    break
+            rem_log = subprocess.run(
+                _ssh_base(ip) + [f"tail -c 800 {q(tmp + '/remediate.log')} "
+                                 f"2>/dev/null"],
+                capture_output=True, text=True, timeout=30).stdout or ""
+            if rem_rc is not None and rem_rc in (0, 1, 2):
+                # fresh post-remediation eval (canonical)
+                inner_post = (f"sudo -n oscap xccdf eval "
+                              f"--profile {q(prof)} "
+                              f"--results {q(tmp + '/results-post.xml')} "
+                              f"--report {q(tmp + '/report-post.html')} "
+                              f"{q(tmp + '/ds.xml')} "
+                              f">{q(tmp + '/post.log')} 2>&1; "
+                              f"echo $? >{q(tmp + '/rc3')}")
+                subprocess.run(
+                    _ssh_base(ip) + [f"nohup sh -c {q(inner_post)} "
+                                     f">/dev/null 2>&1 </dev/null &"],
+                    capture_output=True, text=True, timeout=30)
+                pdeadline = time.monotonic() + SCAN_TIMEOUT
+                while time.monotonic() < pdeadline:
+                    time.sleep(10)
+                    poll3 = subprocess.run(
+                        _ssh_base(ip) + [f"cat {q(tmp + '/rc3')} 2>/dev/null"],
+                        capture_output=True, text=True, timeout=30)
+                    if poll3.returncode == 0 and poll3.stdout.strip():
+                        try:
+                            post_rc = int(poll3.stdout.strip().splitlines()[0])
+                        except ValueError:
+                            post_rc = None
+                        break
+                if post_rc is not None:
+                    # canonical results = the post-remediation eval
+                    with open(results_xml, "wb") as fh:
+                        subprocess.run(
+                            _ssh_base(ip) + [f"sudo -n cat "
+                                             f"{q(tmp + '/results-post.xml')}"],
+                            stdout=fh, stderr=subprocess.PIPE, timeout=300)
+                    with open(report_html, "wb") as fh:
+                        subprocess.run(
+                            _ssh_base(ip) + [f"sudo -n cat "
+                                             f"{q(tmp + '/report-post.html')}"],
+                            stdout=fh, stderr=subprocess.PIPE, timeout=300)
+                    rem_log += " [post-eval fetched]"
+            extra = {"remediate": {"remediate_rc": rem_rc,
+                                   "post_rc": post_rc,
+                                   "log_tail": rem_log[-600:]}}
+            if rem_rc is None:
+                return {"ok": False, "host": name, "scan_mode": "sudo",
+                        "error": f"remediation timed out after "
+                                 f"{REMEDIATE_TIMEOUT}s",
+                        **extra}
+            ok = post_rc in (0, 1, 2) if post_rc is not None else ok
+            rc = post_rc if post_rc is not None else rc
         return {"ok": ok, "host": name, "agent_id": agent.get("id"),
                 "returncode": rc, "ds_path": ds_path,
                 "scan_mode": "sudo",
@@ -334,7 +427,8 @@ def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
                                 if report_html.exists() else None),
                 "stdout_tail": logtxt[-800:],
                 "stderr_tail": (fetched["results"].stderr or b'')
-                               .decode("utf-8", "replace")[-400:]}
+                               .decode("utf-8", "replace")[-400:],
+                **extra}
     finally:
         if tmp:
             try:
@@ -346,7 +440,8 @@ def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
 
 def scan_host(agent: Dict[str, Any], day: str,
               profile: Optional[str] = None,
-              dry_run: bool = False) -> Dict[str, Any]:
+              dry_run: bool = False,
+              remediate: bool = False) -> Dict[str, Any]:
     """Run one OpenSCAP XCCDF eval on `agent`. Prefers the detached
     `sudo -n oscap` flow over ssh when the target has passwordless sudo
     (root-only checks verify); otherwise plain user-mode oscap-ssh."""
@@ -407,7 +502,8 @@ def scan_host(agent: Dict[str, Any], day: str,
     mode = "user"
     if ip and SUDO_SCAN_ENABLED and _sudo_available(ip):
         sudo_out = _sudo_remote_scan(agent, name, ip, prof, str(ds),
-                                     results_xml, report_html)
+                                     results_xml, report_html,
+                                     remediate=remediate)
         if sudo_out.get("scan_mode") != "sudo-fallback-user":
             return sudo_out
         mode = "sudo-fallback-user"
@@ -787,8 +883,10 @@ def write_evidence(tenant_id: str, rule_rows: List[Dict[str, Any]],
 
 def scan_and_record(agent: Dict[str, Any], tenant_id: str, day: str,
                     profile: Optional[str] = None,
-                    dry_run: bool = False) -> Dict[str, Any]:
-    out = scan_host(agent, day, profile=profile, dry_run=dry_run)
+                    dry_run: bool = False,
+                    remediate: bool = False) -> Dict[str, Any]:
+    out = scan_host(agent, day, profile=profile, dry_run=dry_run,
+                    remediate=remediate)
     if dry_run or not out.get("ok"):
         return out
     results_xml = out.get("results_path")
@@ -814,7 +912,8 @@ def _ds_path_for(agent: Dict[str, Any]) -> Optional[str]:
 
 def scan_fleet(agents: List[Dict[str, Any]], tenant_id: str, day: str,
                profile: Optional[str] = None,
-               dry_run: bool = False) -> Dict[str, Any]:
+               dry_run: bool = False,
+               remediate: bool = False) -> Dict[str, Any]:
     """Scan every reachable managed host, then merge ALL hosts' results
     into ONE evidence write (worst-result per rule, see merge_results).
     Per-host immediate writes would thrash the evidence store: each
@@ -824,7 +923,8 @@ def scan_fleet(agents: List[Dict[str, Any]], tenant_id: str, day: str,
     out: Dict[str, Any] = {"started": started, "scans": [], "errors": []}
 
     def _scan(a):
-        return scan_host(a, day, profile=profile, dry_run=dry_run)
+        return scan_host(a, day, profile=profile, dry_run=dry_run,
+                         remediate=remediate)
 
     specs: List[Dict[str, str]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
@@ -1016,12 +1116,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--day", help="evidence day (default: today, UTC)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the resolved command and exit")
+    ap.add_argument("--remediate", action="store_true",
+                    help="after the eval, run the datastream's own fix "
+                         "scripts (oscap xccdf remediate) as root and "
+                         "re-evaluate — the canonical result is the "
+                         "post-remediation state (requires sudo-mode)")
     ap.add_argument("--json", action="store_true",
                     help="machine-readable output")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args(argv)
     if args.smoke:
         return _smoke()
+    remediate = args.remediate or _SOC_OSCAP_REMEDIATE
     if not (args.host or args.fleet or args.collect):
         ap.error("one of --host / --fleet / --collect is required")
     day = args.day or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
@@ -1056,7 +1162,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                               "error": "no scannable agents (family resolved)"}))
             return 1
         return emit(_tasklog_run("fleet", scan_fleet, agents, tenant,
-                                 day, args.profile, args.dry_run))
+                                 day, args.profile, args.dry_run,
+                                 remediate))
 
     # single host
     agents = fleet_agents()
@@ -1089,7 +1196,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if (SSG_DIR / "ssg-ubuntu2404-ds.xml").exists():
             row["os_version"] = "24.04"
     return emit(_tasklog_run(args.host, scan_and_record, row, tenant,
-                             day, args.profile, args.dry_run))
+                             day, args.profile, args.dry_run,
+                             remediate))
 
 
 if __name__ == "__main__":
