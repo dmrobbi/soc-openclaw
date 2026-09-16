@@ -126,3 +126,18 @@ Then open `http://<this-host>:8771/` and click through Fleet → a host →
 OpenSCAP controls → Dry run on a failing control. That dry run is the
 whole pipeline in miniature: gates checked, nothing changed, result
 shown.
+
+## The system, actually running
+
+Real pages from the live dashboard (IPs redacted to the first octet;
+the mutations-disabled notice in the host shot is the genuine gate
+state). More in [docs/screenshots/](docs/screenshots/README.md).
+
+| | |
+|---|---|
+| ![Overview](docs/screenshots/01-overview.png) | ![Fleet](docs/screenshots/02-fleet.png) |
+| ![Host drill-down](docs/screenshots/03-fleet-host-remediate.png) | ![STIG findings](docs/screenshots/04-stig.png) |
+| ![Scores](docs/screenshots/06-scores.png) | ![Tasklog](docs/screenshots/07-tasks.png) |
+
+Per-host views: [STIG host](docs/screenshots/05-stig-host.png) ·
+[CVE host](docs/screenshots/08-cve-host.png).
