@@ -535,6 +535,21 @@ def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
     code, agent = _http_post(f"{c2}/tools/get_agent",
                              {"agent_id": aid}, timeout=8.0)
     if code != 200 or not isinstance(agent, dict) or not agent.get("ok"):
+        # 2026-09-16: the URL drill-downs carry the agent NAME (the URL
+        # segment), but Wazuh get_agent wants the numeric id (400 on a
+        # name). Resolve name-or-id via list_agents and retry once —
+        # the /fleet/<name> pages rendered the error view before this.
+        lcode, lbody = _http_post(f"{c2}/tools/list_agents",
+                                  {"limit": 200}, timeout=8.0)
+        rows = (lbody or {}).get("agents") \
+            if isinstance(lbody, dict) else []
+        match = next((str(r.get("id")) for r in rows
+                      if str(r.get("name") or "") == aid
+                      or str(r.get("id") or "") == aid), None)
+        if match:
+            code, agent = _http_post(f"{c2}/tools/get_agent",
+                                     {"agent_id": match}, timeout=8.0)
+    if code != 200 or not isinstance(agent, dict) or not agent.get("ok"):
         return {"ok": False, "tool": "fleet_host_view",
                 "error": f"C2 get_agent failed ({code})", "agent_id": aid}
     row = agent.get("agent", {})
