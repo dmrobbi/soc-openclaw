@@ -2,6 +2,10 @@
 
 An **agentic Security Operations Center (SOC)** built on two open pieces:
 
+> New here? Start with [quickstart.md](quickstart.md) — how the system
+> works, what runs when, and how to operate it. Full component reference
+> and the decision-tree diagrams: [docs/architecture.md](docs/architecture.md).
+
 - **Wazuh** — the SIEM: fleet agents on every managed system, a manager
   that raises alerts, an indexer (OpenSearch) for history, FIM, a
   vulnerability detector and a system-inventory collector on every host.
