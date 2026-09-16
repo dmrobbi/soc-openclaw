@@ -461,6 +461,27 @@ def tool_tickets_list_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
         "ok": False, "error": f"unexpected C3 response: {body!r}"}
 
 
+def _mask_ip_value(v: str) -> str:
+    """"100.115.156.115" -> "100.x.x.x" (first octet only)."""
+    m = re.fullmatch(r"(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}", str(v).strip())
+    return f"{m.group(1)}.x.x.x" if m else v
+
+
+def _redact_ips(obj: Any) -> Any:
+    """Env-gated (SOC_DASHBOARD_MASK_IPS=1) response redaction for
+    share-safe screenshots: mask every IPv4 under ip-ish keys to its
+    first octet. Host names, scores, statuses pass through."""
+    if os.environ.get("SOC_DASHBOARD_MASK_IPS", "0") != "1":
+        return obj
+    keys = {"ip", "agent_ip", "host_ip", "ip_address", "peer_ip"}
+    if isinstance(obj, dict):
+        return {k: (_mask_ip_value(v) if k in keys and isinstance(v, str)
+                    else _redact_ips(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_ips(v) for v in obj]
+    return obj
+
+
 def tool_host_control_status(args: Dict[str, Any]) -> Dict[str, Any]:
     """host_control_status(day=None, tenant_id=None, host=None)
     -> per-host per-control attribution from the day's archived
@@ -1258,7 +1279,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/tenants.json":
             tenants = _load_routing_tenants() or {}
-            self._json(200, {"ok": True, "tenants": tenants})
+            self._json(200, _redact_ips({"ok": True, "tenants": tenants}))
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
         # Static files
@@ -1500,7 +1521,7 @@ class _Handler(BaseHTTPRequestHandler):
                              else None})
             except Exception:
                 pass
-        self._json(200, result)
+        self._json(200, _redact_ips(result))
         self._log("POST", 200, (time.monotonic() - t0) * 1000)
 
     def do_PUT(self) -> None:  # noqa: N802
