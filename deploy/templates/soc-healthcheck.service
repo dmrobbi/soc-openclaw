@@ -17,7 +17,12 @@ Description=SOC hourly healthcheck (deploy/healthcheck.sh)
 Documentation=file:///opt/soc-openclaw/deploy/healthcheck.sh
 After=network-online.target
 Wants=network-online.target
-OnFailure=soc-healthcheck-alert@%n.service
+# 2026-09-17: %n without a trailing .service — appending one produced
+# the doubled instance soc-healthcheck-alert@soc-healthcheck.service.service
+# (%i = 'soc-healthcheck.service.service'); unit references auto-append
+# .service, so this expands to soc-healthcheck-alert@soc-healthcheck.service
+# and %i stays exactly the failed unit's name.
+OnFailure=soc-healthcheck-alert@%n
 
 [Service]
 Type=oneshot

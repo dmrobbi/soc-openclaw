@@ -121,7 +121,14 @@ secrets-perm contract and pipeline state ownership correct. Exit 0 =
 green. The healthcheck itself is **automated**: `soc-healthcheck.timer`
 runs it hourly and on failure `deploy/notify-healthcheck-failure.sh`
 sends the operator a message (OpenClaw chat first, SMTP fallback) with
-a 4h cooldown.
+a 4h cooldown. Delivery is hard-bounded (2026-09-17): the OpenClaw step
+caps at 60s (`--timeout 45` agent-turn budget), the SMTP fallback gets
+its own 20s window — together they fit inside the alert unit's
+`TimeoutStartSec=120`, so a stalled gateway degrades to the fallback
+instead of systemd killing the alert mid-flight. `OnFailure` is written
+as `soc-healthcheck-alert@%n` (no trailing `.service` — `%n` already
+includes one, and the doubled suffix produced instance
+`soc-healthcheck.service.service` with a mangled `%i`).
 
 Test the alert path once after install (sends one message to the
 operator's chat):
