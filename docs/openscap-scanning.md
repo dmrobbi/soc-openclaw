@@ -156,6 +156,36 @@ derives the failing (host, control) pairs from the day's scan results
 XMLs — the merge loses this, the attribution keeps it. The fleet pass
 runs before the score step so remediation evidence is graded in-run.
 
+### Fleet host resolution + SOC_FLEET_EXTRA override
+
+`fleet_agents()` resolves name → ip in order: **C2 manager-mcp
+`list_agents` first, C1 indexer fallback, then `SOC_FLEET_EXTRA` rows**
+(`name:ip:platform:os_version`, comma-separated). Since 2026-09-17 an
+env row whose name matches a registry (C2/C1) row **overrides it in
+place** instead of appending a duplicate: the registry's agent id is
+kept, an empty platform/os_version field inherits the registry's value
+(so a bare `name:ip` row is a pure IP pin), and rows with no registry
+match append unchanged (the docker-hosted evgen-d/e/f case). Prefer NOT
+pinning agent-running hosts in `SOC_FLEET_EXTRA` — the registry IP is
+live-correct (agent keepalives re-learn it on every reconnect) and
+DHCP-aware; a stale pin can silently target the wrong VM when a NAT
+network's DHCP pool is shared.
+
+Two reachability contracts for the fleet ssh path (BatchMode,
+passwordless sudo on the target):
+
+1. **Every fleet IP must be SSH-reachable from the SOC host
+   non-interactively.** Hosts on NAT-only libvirt/compose networks
+   (e.g. the evgen-a/b/c VMs on trooper2's `demo_nat` 192.168.200.0/24)
+   are unreachable directly — wire an `ssh` ProxyCommand pattern in the
+   SOC user's `~/.ssh/config` (`Host 192.168.200.*` → `ssh -W %h:%p
+   <nat-host>`); ICMP to such segments never works and is not a health
+   signal.
+2. **Transient link hiccups are retried once.** The fleet ssh step
+   retries a single time (3s later) on rc=255 (connection error) or
+   rc=124 (timeout) — genuine remote-command failures (rc 1–254) are
+   never retried, and recovery is noted in the audit row stderr.
+
 Both gates ship **enabled** in the unit template (2026-09-14/15),
 because every fix is idempotent, audited (snapshot + audit row +
 remediation log) and tenant-gated; set both to `0` for a collect +
