@@ -45,7 +45,14 @@ logger -t soc-healthcheck-alert "failure detected in $UNIT — sending alert"
 # --- 1) OpenClaw chat -------------------------------------------------------
 OC_BIN="${OPENCLAW_BIN:-openclaw}"
 if command -v "$OC_BIN" >/dev/null 2>&1; then
-  if "$OC_BIN" agent --agent main --deliver -m "$MSG" >/dev/null 2>&1; then
+  # 2026-09-17: hard-bound this call. Unbounded, a stalled gateway/cli
+  # blocked past the unit's TimeoutStartSec=120 and systemd SIGTERM'd
+  # the alert unit mid-delivery ('Failed with result timeout',
+  # 2026-09-14 19:02 UTC) — the SMTP fallback below never ran. 45s
+  # agent-turn budget + 60s process cap leaves the 20s SMTP window
+  # inside 120s.
+  if timeout -k 5 60 "$OC_BIN" agent --agent main --deliver \
+       -m "$MSG" --timeout 45 >/dev/null 2>&1; then
     logger -t soc-healthcheck-alert "alert delivered via OpenClaw agent turn"
     exit 0
   fi
