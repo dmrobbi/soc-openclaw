@@ -176,15 +176,36 @@ def fleet_agents() -> List[Dict[str, Any]]:
     # config-driven extras (2026-09-15): docker-hosted fleet members that
     # cannot run Wazuh agents (the packages CDN 403s) —
     # SOC_FLEET_EXTRA='name:ip:platform:os_version,...'
+    # 2026-09-17: an env row whose name matches a registry row (C2 or
+    # C1) now OVERRIDES that row in place instead of appending a
+    # duplicate. The registry rows come first in the list, so a stale
+    # registry IP (agent connection lag after a VM rebuild) used to win
+    # over a corrected env row and fleet SSH targeted a dead address.
+    # Merge semantics: env always wins on ip; an empty platform or
+    # os_version field inherits the registry row's value (a bare
+    # 'name:ip' row acts as a pure IP pin), and the registry's real
+    # agent id is kept so tool calls keep working. Rows with no
+    # registry match append unchanged (the evgen-d/e/f case).
     for row in [r.strip() for r in
                 os.environ.get("SOC_FLEET_EXTRA", "").split(",")
                 if r.strip()]:
         parts = row.split(":")
         if len(parts) >= 2:
-            rows.append({"id": "x-" + parts[0], "name": parts[0],
-                         "ip": parts[1],
-                         "platform": parts[2] if len(parts) > 2 else "",
-                         "os_version": parts[3] if len(parts) > 3 else ""})
+            extra = {"id": "x-" + parts[0], "name": parts[0],
+                     "ip": parts[1],
+                     "platform": parts[2] if len(parts) > 2 else "",
+                     "os_version": parts[3] if len(parts) > 3 else ""}
+            for i, existing in enumerate(rows):
+                if existing["name"] == extra["name"]:
+                    extra["id"] = existing["id"]
+                    if not extra["platform"]:
+                        extra["platform"] = existing["platform"]
+                    if not extra["os_version"]:
+                        extra["os_version"] = existing["os_version"]
+                    rows[i] = extra
+                    break
+            else:
+                rows.append(extra)
     return rows
 
 

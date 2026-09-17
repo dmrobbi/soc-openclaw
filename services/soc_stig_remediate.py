@@ -96,6 +96,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -346,14 +347,32 @@ def _run_on(ctx: Optional[Dict[str, Any]], cmd: str,
            "-o", "StrictHostKeyChecking=accept-new",
            "-p", str(ctx.get("port") or 22),
            f"{ctx.get('user') or 'wez'}@{ctx['ip']}", "sudo -n bash -s"]
-    try:
-        proc = subprocess.run(ssh, input=cmd, capture_output=True,
-                              text=True, timeout=timeout)
-        return proc.returncode, proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired:
-        return 124, "", f"timeout after {timeout}s"
-    except Exception as e:
-        return 1, "", f"exec error: {e!r}"
+    # 2026-09-17: one retry for transient ssh failures. The evgen-a/b/c
+    # fleet hosts sit behind trooper2's NAT-only libvirt network and are
+    # reached via an ssh ProxyCommand over Tailscale; a link hiccup
+    # surfaces as rc=255 (connection error) or rc=124 (timeout) and used
+    # to fail the whole remediation for that (host, control) pair even
+    # though the next attempt seconds later succeeds (observed
+    # 2026-09-17 16:14-16:18 UTC, three consecutive rc=255 then
+    # recovery). rc=0 and real remote-command failures (rc 1-254 from
+    # bash) are never retried.
+    last_rc, out, err = 1, "", ""
+    for attempt in (1, 2):
+        try:
+            proc = subprocess.run(ssh, input=cmd, capture_output=True,
+                                  text=True, timeout=timeout)
+            last_rc, out, err = (proc.returncode, proc.stdout,
+                                 proc.stderr)
+        except subprocess.TimeoutExpired:
+            last_rc, out, err = 124, "", f"timeout after {timeout}s"
+        except Exception as e:
+            last_rc, out, err = 1, "", f"exec error: {e!r}"
+        if last_rc not in (255, 124):
+            return last_rc, out, err
+        if attempt == 1:
+            time.sleep(3.0)
+    return last_rc, out, (err + f"\n[ssh retried after transient "
+                          f"failure; both attempts rc={last_rc}]")
 
 
 # ---------------------------------------------------------------------------
