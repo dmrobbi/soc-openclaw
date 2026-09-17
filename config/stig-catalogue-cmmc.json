@@ -115,7 +115,7 @@
     "high"
    ],
    "check": "systemctl is-active auditd   # or wazuh-manager container running and ingesting syslog/auth.log",
-   "fix": "apt-get install -y auditd && systemctl enable --now auditd && printf '%s\\n' '-w /etc/passwd -p wa -k identity' '-w /etc/group -p wa -k identity' '-w /etc/sudoers -p wa -k actions' '-w /etc/shadow -p wa -k identity' '-a always,exit -F arch=b64 -S execve -k exec' > /etc/audit/rules.d/50-soc-base.rules && augenrules --load 2>/dev/null || auditctl -R /etc/audit/rules.d/50-soc-base.rules",
+   "fix": "command -v apt-get >/dev/null 2>&1 && apt-get install -y -q auditd; command -v dnf >/dev/null 2>&1 && dnf install -y -q auditd; systemctl enable --now auditd && printf '%s\\n' '-w /etc/passwd -p wa -k identity' '-w /etc/group -p wa -k identity' '-w /etc/sudoers -p wa -k actions' '-w /etc/shadow -p wa -k identity' '-a always,exit -F arch=b64 -S execve -k exec' > /etc/audit/rules.d/50-soc-base.rules && augenrules --load 2>/dev/null || auditctl -R /etc/audit/rules.d/50-soc-base.rules",
    "tags": [
     "cmmc",
     "cmmc-L1",
@@ -219,7 +219,7 @@
     "high"
    ],
    "check": "Verify password policy enforces complexity + rotation; verify SSH key-based auth is preferred over passwords (PasswordAuthentication no in sshd_config).",
-   "fix": "apt-get install -y libpam-pwquality && sed -ri 's/^#?\\s*minlen.*/minlen = 14/' /etc/security/pwquality.conf && sed -ri 's/^#?\\s*PASS_MIN_LEN.*/PASS_MIN_LEN 14/' /etc/login.defs",
+   "fix": "command -v apt-get >/dev/null 2>&1 && apt-get install -y -q libpam-pwquality; command -v dnf >/dev/null 2>&1 && dnf install -y -q libpwquality; sed -ri 's/^#?\\s*minlen.*/minlen = 14/' /etc/security/pwquality.conf && sed -ri 's/^#?\\s*PASS_MIN_LEN.*/PASS_MIN_LEN 14/' /etc/login.defs",
    "tags": [
     "cmmc",
     "cmmc-L1",

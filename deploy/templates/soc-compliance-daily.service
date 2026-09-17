@@ -39,7 +39,7 @@ Environment="SOC_FLEET_EXTRA=evgen-d:192.168.122.44:rocky:8,evgen-e:192.168.122.
 # audited). Set to 0 to collect+score only.
 Environment="SOC_AUTO_REMEDIATE=1"
 Environment="SOC_AUTO_REMEDIATE_FLEET=1"
-Environment="SOC_AUTO_REMEDIATE_FLEET_HOSTS=evgen-a,evgen-b,evgen-c"
+Environment="SOC_AUTO_REMEDIATE_FLEET_HOSTS=evgen-a,evgen-b,evgen-c,evgen-d,evgen-e,evgen-f"
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc_compliance_daily.py
 StandardOutput=journal
 StandardError=journal

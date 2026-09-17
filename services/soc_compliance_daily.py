@@ -115,12 +115,25 @@ def _fleet_remediation_pass(tenants: List[str], day: str,
     from soc_scanner import host_control_status
     from soc_stig import get_catalogue
     from soc_stig_remediate import tool_remediate_control, looks_like_command
+    from soc_routing import get_config
     allow = {h.strip() for h in
              os.environ.get("SOC_AUTO_REMEDIATE_FLEET_HOSTS", "").split(",")
              if h.strip()}
     catalogue = {c["id"]: c for c in get_catalogue()["controls"]}
     out: Dict[str, Any] = {"allowlist": sorted(allow) or "(none)"}
     for t in tenants:
+        # 2026-09-17: skip tenants whose policy does not allow
+        # auto-remediation BEFORE resolving pairs — without a scan-day
+        # manifest every tenant resolves to the same specs, so each
+        # tenant duplicated every (host, control) attempt (stsgym's
+        # refusals were pure noise).
+        try:
+            tr = get_config().tenant(t)
+            if "auto_remediate" not in tr.allowed_actions:
+                out[t] = {"skipped": "policy: auto_remediate not in allowed_actions"}
+                continue
+        except Exception:
+            pass  # unknown tenant — let remediate_control's gate decide
         try:
             st = host_control_status(day, tenant_id=t)
         except Exception as exc:
