@@ -1,0 +1,56 @@
+# STIG classifier catalogue — Ubuntu 22.04 change monitoring (2026-09-18)
+#
+# Maps the fleet's ACTUAL high-level alert traffic to DISA controls so
+# the /stig page's severity/family/host breakdowns reflect real
+# activity (owner request: "By nist family should show real numbers").
+#
+# Before this file, the only L10+ rules that fired since 2026-09-10
+# (100300 package-installed ×434, 100102 AIDE-change ×21) were unmapped
+# → the /stig page showed only the historical AC-2 test finding.
+#
+# Coupling semantics (by design):
+#   - 100102 (AIDE change alert) → AU-9: the 800-53→CMMC alias
+#     (AU-9 → AU.L1-3.3.003, soc_evidence._CONTROL_ALIASES) makes this
+#     a CLOSED-LOOP finding — it fail-grades AU.L1-3.3.003 for the day
+#     unless a same-day remediation/scan pass exists (mixed→pass).
+#     Unauthorized change to watched security files = real
+#     non-compliance evidence until remediated. This pairs with the
+#     AIDE fleet work (2026-09-18): with AIDE live on all hosts, this
+#     rule now fires on REAL integrity violations.
+#   - 100300 (package installed/removed) → SI-2: NO alias exists for
+#     SI-2 in the CMMC seed → display-only on /stig. Routine patching
+#     should not fail a compliance control; the finding exists for
+#     visibility (software-change monitoring), not for scoring.
+#
+# Entries follow config/stig-rules/catalogue-ubuntu-22-04-v2r8.yaml.
+
+version: 1
+benchmark: Ubuntu 22.04 LTS
+stig_release: V2R8
+last_updated: 2026-09-18
+
+entries:
+  - wazuh_rules: [100102]
+    stig_id: V-260584
+    control_id: AU-9
+    title: AIDE detected changes to security-critical files
+    severity: high
+    nist_family: AU
+    evidence_required: [aide_check_output, change_review_record]
+    remediate_hint: >-
+      AIDE flagged changes to watched files (SSH keys, sudoers, sshd,
+      fail2ban). Review the AIDE diff; if authorized (documented change),
+      rebuild the AIDE baseline (aideinit) and note it; if unauthorized,
+      restore from baseline and investigate immediately.
+
+  - wazuh_rules: [100300]
+    stig_id: V-260477
+    control_id: SI-2
+    title: Software package installed or removed
+    severity: medium
+    nist_family: SI
+    evidence_required: [package_log, change_ticket]
+    remediate_hint: >-
+      A package was installed/removed. Verify it was an authorized,
+      tracked change (patch or approved request); unexplained installs
+      should be investigated and the host's baseline updated.
