@@ -1039,6 +1039,30 @@ _TASK_LOGGED_TOOLS = {
 }
 
 
+def _task_details(tool: str,
+                 args: Optional[Dict[str, Any]],
+                 result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Compact, human-readable details for task-log rows (2026-09-18:
+    the old rows carried only {tool, fleet_score} — task drill-downs
+    showed nothing about WHAT ran or why it failed). Cherry-picks
+    request context + the result's outcome fields; never dumps the
+    full result (fleet-scan results are huge) and never secrets."""
+    d: Dict[str, Any] = {"tool": tool}
+    a = args if isinstance(args, dict) else {}
+    for k in ("control_id", "host", "agent_id", "dry_run", "day",
+              "family", "profile"):
+        if k in a:
+            d[k] = a[k]
+    if isinstance(result, dict):
+        for k in ("status", "reason", "rc", "error", "scan_mode",
+                  "results_path", "ok"):
+            if k in result:
+                d[k] = result[k]
+        if isinstance(result.get("scores"), dict):
+            d["fleet_score"] = result["scores"].get("fleet_score")
+    return d
+
+
 def _scan_dir_rows() -> List[Dict[str, Any]]:
     """Synthesize task rows for historic OpenSCAP scans on disk."""
     import hashlib
@@ -1464,7 +1488,8 @@ class _Handler(BaseHTTPRequestHandler):
                     logged_kind,
                     str((args or {}).get("agent_id")
                         or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
-                    "running", started_ts)
+                    "running", started_ts,
+                    details=_task_details(tool, args))
             except Exception:
                 pass
         try:
@@ -1479,7 +1504,7 @@ class _Handler(BaseHTTPRequestHandler):
                         "failed", started_ts,
                         ended=__import__("datetime").datetime.now(
                             __import__("datetime").timezone.utc).isoformat(),
-                        details={"tool": tool, "error": str(e)})
+                        details={**_task_details(tool, args), "error": str(e)})
             except Exception:
                 pass
             self._json(400, {"ok": False, "error": str(e), "tool": tool})
@@ -1497,7 +1522,7 @@ class _Handler(BaseHTTPRequestHandler):
                         "failed", started_ts,
                         ended=__import__("datetime").datetime.now(
                             __import__("datetime").timezone.utc).isoformat(),
-                        details={"tool": tool, "error": repr(e)[:300]})
+                        details={**_task_details(tool, args), "error": repr(e)[:300]})
             except Exception:
                 pass
             self._json(500, {"ok": False, "error": f"internal: {e!r}",
@@ -1514,11 +1539,7 @@ class _Handler(BaseHTTPRequestHandler):
                     started_ts,
                     ended=__import__("datetime").datetime.now(
                         __import__("datetime").timezone.utc).isoformat(),
-                    details={"tool": tool,
-                             "fleet_score": (result.get("scores") or {}).get(
-                                 "fleet_score")
-                             if isinstance(result.get("scores"), dict)
-                             else None})
+                    details=_task_details(tool, args, result))
             except Exception:
                 pass
         self._json(200, _redact_ips(result))
