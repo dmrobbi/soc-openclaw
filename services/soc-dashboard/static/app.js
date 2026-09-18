@@ -1245,7 +1245,7 @@
   async function pageStig() {
     let data;
     try { data = await api("/tools/stig_findings", "POST",
-                           { time_range: "7d", limit: 200 }); }
+                           { time_range: "30d", limit: 200 }); }
     catch (e) { return errorView(e); }
     if (!data || !data.ok) {
       return [el("h1", null, "STIG findings"),

@@ -11,7 +11,7 @@ real current gate state (SOC_MANAGER_MCP_ALLOW_MUTATIONS off).
 | 01-overview.png | `/` | 24h overview: agents, tickets, STIG findings, feed |
 | 02-fleet.png | `/fleet` | fleet table: status, STIG (30d), CVE columns |
 | 03-fleet-host-remediate.png | `/fleet/evgen-a` | host drill-down: OpenSCAP controls + Dry run / Remediate buttons |
-| 04-stig.png | `/stig` | STIG findings (7d): severity, families, hosts, top controls |
+| 04-stig.png | `/stig` | STIG findings (30d): severity, families, hosts, top controls |
 | 05-stig-host.png | `/stig/host/vader` | per-host STIG findings |
 | 06-scores.png | `/scores` | per-tenant scores + 7-day trend |
 | 07-tasks.png | `/tasks` | tasklog: every automated run (scans, remediations) |
