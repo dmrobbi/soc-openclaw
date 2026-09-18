@@ -86,6 +86,10 @@ DEFAULT_REALTIME_LOG = os.environ.get(
     "~/.openclaw/soc/data/realtime_soc.jsonl")
 DEFAULT_OUTPUT_DIR = "/home/wez/.openclaw/workspace/memory"
 DEFAULT_C4_URL = "http://127.0.0.1:8769"
+SCAN_RESULTS_DIR_DEFAULT = os.environ.get(
+    "SOC_SCAN_RESULTS_DIR",
+    os.environ.get("SOC_SCANS_DIR",
+                   os.path.expanduser("~/.openclaw/soc/scans")))
 
 # Decisions we want to highlight in the report.
 DECISION_ACTIONS = (
@@ -442,6 +446,100 @@ def _output_path(output: Optional[str], day: str) -> str:
     return str(p / f"soc-agent-decisions-{day}.md")
 
 
+# --- G8 delivery (2026-09-18): the report file alone is invisible to
+# the operator. After render, send a compact summary via the OpenClaw
+# agent turn (lands in the operator's main chat); fall back to SMTP
+# (self-addressed via the reports mailbox) when the CLI is missing or
+# stalls. Mirrors deploy/notify-healthcheck-failure.sh delivery order.
+DEFAULT_MAILBOX_ENV = ("/home/wez/.openclaw/workspace/secrets/"
+                       "reports-bedimsecurity-mailbox.env")
+DELIVERY_TIMEOUT_S = 45
+
+
+def _scan_diff_section(base: Optional[Path] = None) -> str:
+    """Diff the two latest scan days, or empty string when <2 days.
+    Errors are swallowed: a diff section must never fail the report."""
+    try:
+        import sys
+        scanner_dir = str(Path(__file__).resolve().parent.parent / "scanner")
+        if scanner_dir not in sys.path:
+            sys.path.insert(0, scanner_dir)
+        from soc_scan_diff import diff_days, render_markdown
+        base = Path(base) if base else Path(SCAN_RESULTS_DIR_DEFAULT)
+        days = sorted({d.name for d in base.iterdir()
+                       if d.is_dir() and len(d.name) == 10
+                       and d.name[4] == d.name[7] == "-"})
+        if len(days) < 2:
+            return ""
+        return render_markdown(days[-2], days[-1], diff_days(days[-2], days[-1], base))
+    except Exception:
+        return ""
+
+
+def _deliver_report(out: str, md: str, day: str) -> str:
+    """G8: make the report visible. 1) OpenClaw agent turn (main chat);
+    2) SMTP fallback (self-addressed via the reports mailbox). Returns
+    a short delivery note for the journal/stdout log."""
+    import smtplib
+    import subprocess
+
+    # compact summary for the chat subject/first lines
+    first_head = ""
+    for line in md.splitlines():
+        if line.strip() and not line.startswith("#"):
+            first_head = line.strip()
+            break
+    diff_md = _scan_diff_section()
+    summary = (f"SOC daily decisions report for {day} → {out}\n"
+               f"{first_head}\n")
+    if diff_md:
+        summary += "\n" + diff_md[:3000]
+
+    oc = os.environ.get("OPENCLAW_BIN", "openclaw")
+    if os.path.exists(oc) or os.environ.get("OPENCLAW_BIN"):
+        try:
+            r = subprocess.run(
+                ["timeout", "-k", "5", "60", oc, "agent",
+                 "--agent", "main", "--deliver", "-m", summary,
+                 "--timeout", "45"],
+                capture_output=True, text=True,
+                timeout=DELIVERY_TIMEOUT_S)
+            if r.returncode == 0:
+                return "delivered via openclaw agent turn"
+        except Exception:
+            pass
+
+    env_file = os.environ.get("SOC_MAILBOX_ENV", DEFAULT_MAILBOX_ENV)
+    if not os.path.isfile(env_file):
+        return "not delivered (no mailbox env + no openclaw)"
+    cfg = {}
+    for line in open(env_file, encoding="utf-8"):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            cfg[k.strip()] = v.strip()
+    host = cfg.get("SMTP_HOST")
+    port = int(cfg.get("SMTP_PORT", "587"))
+    mailbox = cfg.get("REPORTS_MAILBOX")
+    pw = cfg.get("REPORTS_MAILBOX_PW")
+    if not (host and mailbox and pw):
+        return "not delivered (mailbox env incomplete)"
+    try:
+        s = smtplib.SMTP(host, port, timeout=20)
+        try:
+            s.starttls()
+            s.login(mailbox, pw)
+            s.sendmail(
+                mailbox, [mailbox],
+                "Subject: [SOC] daily decisions report " + day
+                + "\r\n\r\n" + summary)
+        finally:
+            s.quit()
+        return "delivered via SMTP (reports mailbox)"
+    except Exception as e:
+        return f"not delivered (SMTP error: {e!r})"
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
         description="SOC daily decisions report (Track D, D1)")
@@ -466,9 +564,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(md)
+    note = ""
+    if os.environ.get("SOC_DAILY_DELIVER", "1") != "0":
+        try:
+            note = " | " + _deliver_report(out, md, day)
+        except Exception as e:
+            note = f" | delivery error: {e!r}"
     sys.stdout.write(f"[soc-daily-decisions] wrote {out} "
                      f"({len(audit)} audit records, "
-                     f"{len(realtime)} realtime)\n")
+                     f"{len(realtime)} realtime){note}\n")
     return 0
 
 
