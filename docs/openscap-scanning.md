@@ -190,3 +190,25 @@ Both gates ship **enabled** in the unit template (2026-09-14/15),
 because every fix is idempotent, audited (snapshot + audit row +
 remediation log) and tenant-gated; set both to `0` for a collect +
 rescore-only night.
+
+## Scan exceptions — `config/ignore_list.yml`
+
+STIG rules that must not run on a scan host (break a service, will
+never apply, handled manually) are listed in
+`config/ignore_list.yml`. The scanner builds an XCCDF 1.2 tailoring
+file per scan (extends the scan profile, `select=false`) and pushes it
+with the datastream; excluded rules return **notselected** and are
+dropped from evidence grading and scoring — they never pass or fail.
+
+- `global:` applies to every host; `hosts: <name>:` adds per-host
+  entries (keyed on the C2 agent name used in scans).
+- Entries match by short rule name (`aide_build_database`) or full
+  xccdf id; unmatched entries log a WARNING and are skipped — a typo
+  never breaks a scan (it runs without that exclusion).
+- Reloaded fresh at each scan — no service restart needed.
+- Override the path with `SOC_SCAN_IGNORE_LIST` (e.g. for tests).
+- The generated per-host tailoring is kept beside the day's results
+  (`scans/<day>/tailoring-<host>.xml`) as an exclusion audit trail.
+
+Verified end-to-end 2026-09-18: `aide_check_audit_tools` listed →
+evgen-b scan → `notselected` in results, other rules unchanged.
