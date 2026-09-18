@@ -93,13 +93,15 @@ services:
       # from /home/wez/.openclaw-wazuh.
       - OPENCLAW_STATE_DIR=/home/wez/.openclaw-wazuh
       # 2026-08-06 15:33 — SOC A1 moved: gateway URL now points at
-      # trooper2 (10.0.0.70:18790). The container's default route via
-      # 172.19.0.1 → host's br1 → 10.0.0.0/8 reaches trooper2.
-      - OPENCLAW_GATEWAY_URL=ws://10.0.0.70:18790
-      # 2026-08-06 15:33 — token for trooper2's SOC gateway. Stored
-      # on the host at /home/wez/.openclaw/workspace/secrets/openclaw-
-      # soc-gateway.token (chmod 600, owner wez).
-      - OPENCLAW_GATEWAY_TOKEN=c0548f7abb43f704194c9baa652af29bc831695542c35a2c
+      # Remote OpenClaw SOC gateway the container's agent turns run
+      # against. Set per deployment via soc-stack.env (NEVER hardcode
+      # the URL or the token here — this file is public).
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL}
+      # Gateway auth token — set in soc-stack.env (gitignored), e.g.
+      # OPENCLAW_GATEWAY_TOKEN=<random 48-hex>. Rotate on any suspicion
+      # of exposure; both ends (gateway openclaw.json gateway.auth.token
+      # and this env) must match.
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
       # 2026-08-11 — SOC E1b: tell soc_stig_classifier where to find the
       # per-STIG YAML catalogues. Combined with the
       # /usr/local/stig-rules:ro bind-mount above, this is what makes
@@ -220,8 +222,9 @@ services:
       # by that uid.
       # 2026-08-08 — SOC isolation: replace the host's npm-global openclaw
       # bind-mount with the dedicated SOC install at
-      # /home/wez/.openclaw-soc-install/ (rsynced from trooper2's
-      # /home/wez/.npm-global/lib/node_modules/openclaw/ on 2026-08-08;
+      # /home/wez/.openclaw-soc-install/ (rsynced from the gateway
+      # host's /home/wez/.npm-global/lib/node_modules/openclaw/ on
+      # 2026-08-08;
       # OpenClaw 2026.7.1 commit 2d2ddc4). The host's main install at
       # /home/wez/.npm-global/ is unaffected; this is a separate
       # node_modules tree served by the same /home/wez/.npm-global/
