@@ -42,6 +42,7 @@ Group=__SOC_USER__
 WorkingDirectory=/opt/soc-openclaw
 Environment="SOC_ROUTING_CONFIG=/home/__SOC_USER__/.openclaw/soc/soc-routing.yaml"
 Environment="SOC_EVIDENCE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/evidence"
+Environment="SOC_SCORE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/scores"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Bind to the Tailscale IP (default <lan-ip> for thing1) instead of
 # 127.0.0.1 so the dashboard is reachable from any tailnet device.
