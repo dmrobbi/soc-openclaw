@@ -88,7 +88,8 @@ services:
       - WAZUH_AGENTIC_LOOP_LIVE=1       # 2026-08-17 17:55 UTC: Phase 4 — flip the switch (operator consent at 17:55 UTC). Replaces WAZUH_AGENTIC_LOOP_SHADOW=1 from Phase 3. Per the closed-loop completion plan Phase 4 sub-task 4.c, run for 24h wall-time then sign off (4.d). Rollback: revert to SHADOW=1 + `docker compose up -d wazuh.manager`. See memory/2026-08-17-soak-report.md for runbook.
       # directory (separate from the user's ~/.openclaw/).
       # 2026-08-06 15:33 — SOC A1 moved: the SOC gateway now lives on
-      # trooper2 (10.0.0.70:18790). The manager talks to it via ws://;
+      # the remote gateway host (address + port come from
+      # OPENCLAW_GATEWAY_URL below). The manager talks to it via ws://;
       # OPENCLAW_STATE_DIR points at the per-host state dir mounted
       # from /home/wez/.openclaw-wazuh.
       - OPENCLAW_STATE_DIR=/home/wez/.openclaw-wazuh
