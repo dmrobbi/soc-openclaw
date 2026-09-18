@@ -241,6 +241,110 @@ def _sudo_available(ip: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# ignore_list.yml — STIG rule exceptions (need-not-run list)
+# ---------------------------------------------------------------------------
+IGNORE_LIST_PATH = Path(os.environ.get(
+    "SOC_SCAN_IGNORE_LIST",
+    str(Path(__file__).resolve().parents[2] / "config" / "ignore_list.yml")))
+
+
+def load_ignore_list(path: Optional[str] = None) -> Dict[str, Any]:
+    """Load the scan exception list. Returns {"global": [...],
+    "hosts": {name: [...]}} — each entry {"rule": ..., "reason": ...}.
+    Fail-open: a missing file returns empty lists; an unreadable file
+    logs a warning and returns empty lists (a config typo must never
+    break the nightly scan — it just runs without exclusions)."""
+    p = Path(path) if path else IGNORE_LIST_PATH
+    out: Dict[str, Any] = {"global": [], "hosts": {}}
+    if not p.exists():
+        return out
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except ImportError:
+        print(f"[soc-scan] WARNING: PyYAML missing — ignore list "
+              f"{p} not applied", file=sys.stderr)
+        return out
+    except Exception as e:
+        print(f"[soc-scan] WARNING: ignore list {p} unreadable ({e!r}) "
+              f"— not applied", file=sys.stderr)
+        return out
+    if not isinstance(data, dict):
+        return out
+    glob = data.get("global") or []
+    if isinstance(glob, list):
+        out["global"] = [{"rule": e.get("rule"), "reason": e.get("reason", "")}
+                         for e in glob if isinstance(e, dict) and e.get("rule")]
+    hosts = data.get("hosts") or {}
+    if isinstance(hosts, dict):
+        for hname, entries in hosts.items():
+            if isinstance(entries, list):
+                out["hosts"][str(hname)] = [
+                    {"rule": e.get("rule"), "reason": e.get("reason", "")}
+                    for e in entries if isinstance(e, dict) and e.get("rule")]
+    return out
+
+
+def _ds_rule_ids(ds_path: str) -> set:
+    """All full xccdf rule ids in a datastream (raw regex — fast)."""
+    try:
+        with open(ds_path, encoding="utf-8") as f:
+            blob = f.read()
+    except Exception:
+        return set()
+    return set(m[4:-1] for m in
+               re.findall(r'id="xccdf_[^"]*content_rule_[a-z0-9_]+"', blob))
+
+
+def build_tailoring(ds_path: str, base_profile: str,
+                    entries: List[Dict[str, Any]], out_path: str) -> Dict[str, Any]:
+    """Write an XCCDF 1.2 tailoring that extends `base_profile` with
+    `selected=false` for each ignored rule. Short rule names are
+    resolved to full xccdf ids against the DS; full ids pass through.
+    Returns {"ok", "profile_id", "resolved", "unmatched", "path"}.
+    An empty `resolved` set means nothing to tailor (caller skips)."""
+    all_ids = _ds_rule_ids(ds_path)
+    resolved: List[str] = []
+    unmatched: List[str] = []
+    for e in entries:
+        r = str(e.get("rule") or "")
+        full = f'xccdf_org.ssgproject.content_rule_{r}'
+        if full in all_ids:
+            resolved.append(full)
+        elif r.startswith("xccdf_") and r in all_ids:
+            resolved.append(r)
+        else:
+            unmatched.append(r)
+    out = Path(out_path)
+    if not resolved:
+        return {"ok": False, "profile_id": base_profile,
+                "resolved": [], "unmatched": unmatched, "path": None}
+    pid = base_profile + "_soc_ignore"
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    selects = "\n".join(
+        f'    <select idref="{r}" selected="false"/>' for r in sorted(set(resolved)))
+    doc = f'''<Tailoring id="xccdf_org.ssgproject.content_tailoring_soc_ignore" xmlns="http://checklists.nist.gov/xccdf/1.2">
+  <status>incomplete</status>
+  <version time="{now}">1</version>
+  <Profile id="{pid}" extends="{base_profile}">
+    <title override="true">SOC tailored (ignore_list.yml)</title>
+    <description override="true">Scan exclusions: {", ".join(sorted(set(str(e.get("rule")) for e in entries if e.get("rule"))))}</description>
+{selects}
+  </Profile>
+</Tailoring>
+'''
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(doc, encoding="utf-8")
+    return {"ok": True, "profile_id": pid, "resolved": sorted(set(resolved)),
+            "unmatched": unmatched, "path": str(out)}
+
+
+def effective_ignore_entries(ignore: Dict[str, Any], host: str) -> List[Dict[str, Any]]:
+    """global + per-host entries for one scan target."""
+    return list(ignore.get("global") or []) + list((ignore.get("hosts") or {}).get(host) or [])
+
+
 def _sudo_mode_command(ip: str, prof: str,
                        tmp: str = "/tmp/tmp.XXXXXXXXXX") -> str:
     """Human-readable sudo-mode eval command (dry-run/log display)."""
@@ -258,7 +362,8 @@ def _looks_like_sudo_denial(*texts: str) -> bool:
 
 def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
                       prof: str, ds_path: str, results_xml: Path,
-                      report_html: Path, remediate: bool = False
+                      report_html: Path, remediate: bool = False,
+                      tailoring_path: Optional[str] = None
                       ) -> Dict[str, Any]:
     """Root-mode eval on `ip`: push the DS (scp) into a remote
     `mktemp -d /tmp/tmp.XXXXXXXXXX`, launch the eval DETACHED as
@@ -288,7 +393,19 @@ def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
             return {"ok": False, "host": name, "scan_mode": "sudo",
                     "error": f"sudo-mode DS push failed: "
                              f"{(scp.stderr or '')[-200:]}"}
-        inner = (f"sudo -n oscap xccdf eval --profile {q(prof)} "
+        t_flags = ""
+        if tailoring_path:
+            sct = subprocess.run(
+                _scp_base(ip) + [tailoring_path,
+                                 f"{SCAN_USER}@{ip}:{tmp}/tailoring.xml"],
+                capture_output=True, text=True, timeout=120)
+            if sct.returncode != 0:
+                return {"ok": False, "host": name, "scan_mode": "sudo",
+                        "error": f"tailoring push failed: "
+                                 f"{(sct.stderr or '')[-200:]}"}
+            t_flags = f"--tailoring-file {q(tmp + '/tailoring.xml')} "
+        inner = (f"sudo -n oscap xccdf eval {t_flags}"
+                f"--profile {q(prof)} "
                  f"--results {q(tmp + '/results.xml')} "
                  f"--report {q(tmp + '/report.html')} "
                  f"{q(tmp + '/ds.xml')} "
@@ -393,7 +510,7 @@ def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
                 capture_output=True, text=True, timeout=30).stdout or ""
             if rem_rc is not None and rem_rc in (0, 1, 2):
                 # fresh post-remediation eval (canonical)
-                inner_post = (f"sudo -n oscap xccdf eval "
+                inner_post = (f"sudo -n oscap xccdf eval {t_flags}"
                               f"--profile {q(prof)} "
                               f"--results {q(tmp + '/results-post.xml')} "
                               f"--report {q(tmp + '/report-post.html')} "
@@ -500,9 +617,34 @@ def scan_host(agent: Dict[str, Any], day: str,
     results_xml = results_dir / f"results-{safe}.xml"
     report_html = results_dir / f"report-{safe}.html"
     ds_path = str(ds)
+
+    # ignore_list.yml — exception rules are deselected via an XCCDF
+    # tailoring; excluded rules return notselected and stay out of
+    # grading/scoring (verified 2026-09-18 on thing1).
+    ignore = load_ignore_list()
+    ign_entries = effective_ignore_entries(ignore, name)
+    tailoring_path: Optional[str] = None
+    if ign_entries:
+        t_out = results_dir / f"tailoring-{safe}.xml"
+        t = build_tailoring(ds_path, prof, ign_entries, str(t_out))
+        if t.get("ok"):
+            tailoring_path = t["path"]
+            prof = t["profile_id"]
+            print(f"[soc-scan] {name}: ignoring {len(t['resolved'])} "
+                  f"rule(s) via tailoring", file=sys.stderr)
+        if t.get("unmatched"):
+            print(f"[soc-scan] WARNING: {name}: ignore_list entries not "
+                  f"found in DS (skipped): {t['unmatched']}",
+                  file=sys.stderr)
+
     cmd = [
         "oscap-ssh", f"{SCAN_USER}@{ip}" if ip else SCAN_USER, SSH_PORT,
         "xccdf", "eval",
+    ]
+    if tailoring_path:
+        # oscap-ssh scp's the local tailoring alongside the DS
+        cmd += ["--tailoring-file", tailoring_path]
+    cmd += [
         "--profile", prof,
         "--results", str(results_xml),
         "--report", str(report_html),
@@ -524,7 +666,8 @@ def scan_host(agent: Dict[str, Any], day: str,
     if ip and SUDO_SCAN_ENABLED and _sudo_available(ip):
         sudo_out = _sudo_remote_scan(agent, name, ip, prof, str(ds),
                                      results_xml, report_html,
-                                     remediate=remediate)
+                                     remediate=remediate,
+                                     tailoring_path=tailoring_path)
         if sudo_out.get("scan_mode") != "sudo-fallback-user":
             return sudo_out
         mode = "sudo-fallback-user"
