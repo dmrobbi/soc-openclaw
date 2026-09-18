@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test deps
+        run: pip install pytest pyyaml
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  lint:
+    # High-signal checks only: syntax errors + undefined names +
+    # unusable/invalid call targets. Cosmetic rules (unused imports,
+    # unused locals) are intentionally NOT gated.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint
+        run: ruff check --select E9,F63,F7,F82,F821 services/ lib/ tests/
