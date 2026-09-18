@@ -127,6 +127,10 @@ OpenSCAP controls → Dry run on a failing control. That dry run is the
 whole pipeline in miniature: gates checked, nothing changed, result
 shown.
 
+**Follow-along versions of this:** [setup walkthrough](docs/walkthroughs/setup.md)
+· [operations walkthrough](docs/walkthroughs/operations.md) ·
+[50-second video tour](docs/walkthroughs/README.md#video--the-dashboard-in-50-seconds)
+
 ## The system, actually running
 
 Real pages from the live dashboard (IPs redacted to the first octet;

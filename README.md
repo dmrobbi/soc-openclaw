@@ -167,6 +167,7 @@ editing personas to propagate updates.
 
 ## Docs
 
+- **[Walkthroughs](docs/walkthroughs/README.md) — start here: 50-second video tour + step-by-step [setup](docs/walkthroughs/setup.md) and [operations](docs/walkthroughs/operations.md) guides**
 - [Deployment guide](docs/deploy-guide.md) — bare host → running SOC
 - [Fleet onboarding](docs/fleet-onboarding.md) — enrolling systems (incl. the required syscollector block)
 - [OpenSCAP scanning](docs/openscap-scanning.md) — compliance scans, evidence, scoring, **remediation** (`soc_scanner.py --collect`, `soc_stig_remediate.py` + dashboard button)
