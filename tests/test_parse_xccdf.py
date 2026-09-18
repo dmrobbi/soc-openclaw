@@ -103,6 +103,41 @@ def test_missing_file_raises(tmp_path):
         parse_xccdf(str(tmp_path / "nope.xml"))
 
 
+def test_scap_datastream_wrapped_benchmark(tmp_path):
+    """SSG/DISA SCAP datastreams nest the Benchmark inside
+    ds:data-stream-collection → ds:data-stream → ds:checklists →
+    ds:component, with non-checklist (OVAL) components alongside.
+    parse_xccdf must find the checklist Benchmark."""
+    doc = (
+        '<ds:data-stream-collection xmlns:ds="http://scap.nist.gov/schema/scap/source/1.2"'
+        ' xmlns:ns0="' + XCCDF_NS + '">'
+        '<ds:data-stream id="ds1">'
+        '<ds:checklists><ds:component-ref id="cl0" xlink:href="#xccdf0"'
+        ' xmlns:xlink="http://www.w3.org/1999/xlink"/></ds:checklists>'
+        '</ds:data-stream>'
+        '<ds:component id="oval0"><oval-def:oval_definitions'
+        ' xmlns:oval-def="http://oval.mitre.org/XMLSchema/oval-definitions-5"/>'
+        '</ds:component>'
+        '<ds:component id="xccdf0">'
+        '<ns0:Benchmark id="test-stig"><ns0:title>DS Wrapped</ns0:title>'
+        '<ns0:Profile id="MAC-1_Public"><ns0:select idref="V-260001"'
+        ' selected="true"/></ns0:Profile>'
+        '<ns0:Group id="V-260001"><ns0:title>SRG-OS-000001</ns0:title>'
+        '<ns0:Rule id="SV-260001r1_rule" severity="high">'
+        '<ns0:title>Audit log files must be owned by root</ns0:title>'
+        '<ns0:fixtext fixref="f1">chmod 0640 /var/log/audit/audit.log</ns0:fixtext>'
+        '</ns0:Rule></ns0:Group></ns0:Benchmark>'
+        '</ds:component></ds:data-stream-collection>')
+    p = tmp_path / "wrapped.xml"
+    p.write_text(doc, encoding="utf-8")
+    out = parse_xccdf(str(p))
+    assert [c["id"] for c in out["controls"]] == ["SV-260001r1_rule"]
+    c = out["controls"][0]
+    assert c["family"] == "AU"
+    assert c["baselines"] == ["high"]
+    assert c["references"]["disa_vuln_id"] == "V-260001"
+
+
 def test_malformed_xml_raises(tmp_path):
     p = tmp_path / "bad.xml"
     p.write_text("<not-closed>", encoding="utf-8")

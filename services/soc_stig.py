@@ -663,13 +663,28 @@ def parse_xccdf(path: str) -> Dict[str, Any]:
     root = tree.getroot()
     benchmark = root
     if _local_tag(benchmark) != "Benchmark":
-        # Some XCCDFs wrap the Benchmark in a <BenchmarkCollection>;
-        # find the inner Benchmark.
-        for q in _xccdf_any("Benchmark"):
-            inner = root.find(q)
-            if inner is not None:
-                benchmark = inner
+        # Two wrap shapes exist:
+        #   1. raw XCCDF wrapped in <BenchmarkCollection> (one level);
+        #   2. SCAP 1.2/1.3 DATASTREAMS (ssg-*-ds.xml): the Benchmark
+        #      sits at ds:data-stream-collection → ds:data-stream →
+        #      ds:checklists → ds:component → {xccdf-1.2}Benchmark.
+        #      Non-checklist components (OVAL/SCE) carry no Benchmark,
+        #      so prefer the first Benchmark that actually contains
+        #      <Rule> elements; fall back to the first found.
+        cands = [el for el in root.iter() if _local_tag(el) == "Benchmark"]
+        for c in cands:
+            if any(True for x in c.iter() if _local_tag(x) == "Rule"):
+                benchmark = c
                 break
+        else:
+            if cands:
+                benchmark = cands[0]
+            else:
+                for q in _xccdf_any("Benchmark"):
+                    inner = root.find(q)
+                    if inner is not None:
+                        benchmark = inner
+                        break
 
     controls: List[Dict[str, Any]] = []
     seen_ids: set = set()
