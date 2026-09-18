@@ -17,7 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
+          # No cache: pip — repo has no requirements/pyproject (deps
+          # are pytest + pyyaml only, ~2s install).
 
       - name: Install test deps
         run: pip install pytest pyyaml
