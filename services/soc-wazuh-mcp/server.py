@@ -82,7 +82,7 @@ def _indexer_url() -> str:
 
 def _indexer_auth_header() -> str:
     user = os.environ.get("WAZUH_INDEXER_USERNAME", "admin")
-    pw = os.environ.get("WAZUH_INDEXER_PASSWORD", "SecretPassword")
+    pw = os.environ["WAZUH_INDEXER_PASSWORD"]  # no insecure default - credentials rotated 2026-09-24
     raw = base64.b64encode(f"{user}:{pw}".encode()).decode()
     return f"Basic {raw}"
 
