@@ -97,17 +97,37 @@ class SecurityOperationsAgent:  # lite
     def ingest_wazuh_alert(self, a: dict) -> dict:
         self._n += 1
         ts = datetime.now(timezone.utc).isoformat()
-        low = {str(k).lower(): v for k, v in a.items()}
-        level_raw = str(low.get("level", low.get("rule_level", 0)))
-        level = int(re.sub(r"[^0-9]", "", level_raw) or 0)
-        host = str(low.get("agent_name", low.get("host", "")))
+        # Option A (2026-09-26): nested-aware extraction — wazuh traffic arrives
+        # as {rule: {...}, agent: {name}, data: {srcip}}; flat keys still win.
+        def _scalar(v):
+            if isinstance(v, dict):
+                for k in ("name", "id", "value"):
+                    if v.get(k) is not None:
+                        return v[k]
+                return ""
+            return v
+
+        def _nf(*names, default=""):
+            for src in [a] + [a[s] for s in ("rule", "agent", "data", "decoder")
+                              if isinstance(a.get(s), dict)]:
+                lowered = {str(k).lower(): v for k, v in src.items()}
+                for n in names:
+                    if n in lowered:
+                        return _scalar(lowered[n])
+                    for k, v in lowered.items():
+                        if n in k:
+                            return _scalar(v)
+            return default
+
+        level = int(re.sub(r"[^0-9]", "", str(_nf("level", "rule_level", default="0")) or "0") or 0)
+        host = str(_nf("agent_name", "host", "agent"))
         alert_id = f"ALERT-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{self._n:06d}"
         rec = {
             "alert_id": alert_id, "ts": ts, "level": level,
-            "rule_id": str(low.get("rule_id", "")),
-            "rule_description": str(low.get("rule_description", low.get("description", ""))),
+            "rule_id": str(_nf("rule_id", "id")),
+            "rule_description": str(_nf("rule_description", "description")),
             "agent_name": host,
-            "src_ip": str(low.get("src_ip", low.get("srcip", ""))),
+            "src_ip": str(_nf("src_ip", "srcip", "source_ip")),
             "full_alert": a,
         }
         triage = ""
@@ -121,8 +141,17 @@ class SecurityOperationsAgent:  # lite
         rec["triage"] = triage
         self.alerts[alert_id] = rec
 
-        sev = "critical" if level >= 12 else "high" if level >= 10 else \
-              "medium" if level >= 7 else "low"
+        # Option B (2026-09-26): contract mapping (IDENTITY.md) — see realtime_ingest
+        if level >= 14:
+            sev = "critical"
+        elif level >= 12:
+            sev = "high"
+        elif level >= 8:
+            sev = "medium"
+        elif level >= 3:
+            sev = "low"
+        else:
+            sev = "informational"
         if re.search(r"\bescalate\b", triage, re.I):
             sev = "critical"
         if sev in ("critical", "high"):

@@ -87,6 +87,19 @@ def _new_incident_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Laya shadow (Phase 1.3 — log-only; LAYA_MODE env: off|shadow|gated, default off)
+# ---------------------------------------------------------------------------
+_LAYA_SHADOW = None
+
+def _laya_shadow():
+    global _LAYA_SHADOW
+    if _LAYA_SHADOW is None:
+        from laya_shadow import LayaShadow
+        _LAYA_SHADOW = LayaShadow()
+    return _LAYA_SHADOW
+
+
+# ---------------------------------------------------------------------------
 # Lite triage agent (stdlib-only fallback for SecurityOperationsAgent)
 # ---------------------------------------------------------------------------
 class LiteTriageAgent:
@@ -101,14 +114,33 @@ class LiteTriageAgent:
         self.incidents: Dict[str, dict] = {}
         self._n = 0
 
+    @staticmethod
+    def _scalar(v):
+        """Option A: collapse nested objects (rule/agent/data) to a usable scalar."""
+        if isinstance(v, dict):
+            for k in ("name", "id", "value"):
+                if v.get(k) is not None:
+                    return v[k]
+            return ""
+        return v
+
     def _field(self, a: dict, *names: str, default: str = "") -> str:
-        lowered = {str(k).lower(): v for k, v in a.items()}
-        for n in names:
-            if n in lowered:
-                return str(lowered[n])
-            for k, v in lowered.items():
-                if n in k:
-                    return str(v)
+        """Option A (2026-09-26): nested-aware extraction. Wazuh traffic arrives
+        as {rule: {level,id,description}, agent: {name}, data: {srcip}} — check
+        top-level (case-insensitive, fuzzy) AND the common sub-objects."""
+        sources = [a]
+        for sub in ("rule", "agent", "data", "decoder"):
+            v = a.get(sub)
+            if isinstance(v, dict):
+                sources.append(v)
+        for src in sources:
+            lowered = {str(k).lower(): v for k, v in src.items()}
+            for n in names:
+                if n in lowered:
+                    return str(self._scalar(lowered[n]))
+                for k, v in lowered.items():
+                    if n in k:
+                        return str(self._scalar(v))
         return default
 
     def ingest_wazuh_alert(self, a: dict) -> dict:
@@ -140,13 +172,26 @@ class LiteTriageAgent:
         except Exception as exc:  # triage is best-effort
             triage_text = f"triage unavailable: {exc!r}"
 
-        sev = "low"
-        if level >= 12:
+        # Option B (2026-09-26): deterministic severity per the SOC contract
+        # (soc-agents/soc-triage/IDENTITY.md): 0-2 informational, 3-7 low,
+        # 8-11 medium, 12-13 high, 14+ critical.
+        # NOTE: the "LLM regex override" below predates this change but does NOT
+        # match `"severity_class":` output (underscore not in its char class), so
+        # in practice severity is deterministic from rule level in all cases —
+        # which matches the contract and the rich-state eval verdict. Only the
+        # "escalate" keyword path can adjust severity upward. Do not "fix" the
+        # regex without a decision: gemma over-predicts high/critical (0.565
+        # spot-check acc, 87% page rate) — deterministic is the better policy.
+        if level >= 14:
             sev = "critical"
-        elif level >= 10:
+        elif level >= 12:
             sev = "high"
-        elif level >= 7:
+        elif level >= 8:
             sev = "medium"
+        elif level >= 3:
+            sev = "low"
+        else:
+            sev = "informational"
         if triage_ok:
             m = re.search(r"severity['\": =]+(critical|high|medium|low|info)", triage_text, re.I)
             if m:
@@ -166,6 +211,17 @@ class LiteTriageAgent:
             "full_alert": a,
         }
         self.alerts[alert_id] = alert
+
+        # Laya shadow prediction (log-only; never affects triage/escalation)
+        try:
+            from laya_shadow import TRIAGE_QUESTIONS, build_alert_state, extract_level
+            _sh = _laya_shadow()
+            if _sh.enabled:
+                _sh.predict(build_alert_state(a), dict(TRIAGE_QUESTIONS),
+                            context={"alert_id": alert_id, "level": extract_level(a),
+                                     "ingest_severity": sev, "triage_ok": triage_ok})
+        except Exception:
+            pass  # shadow must never break ingest
 
         escalate = (
             sev in ("critical", "high")
