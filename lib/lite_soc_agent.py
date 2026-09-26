@@ -130,14 +130,9 @@ class SecurityOperationsAgent:  # lite
             "src_ip": str(_nf("src_ip", "srcip", "source_ip")),
             "full_alert": a,
         }
-        triage = ""
-        try:
-            r = call_llm(agent_id="soc-triage",
-                         message=json.dumps(a, default=str)[:4000],
-                         audit=False, timeout=25.0)
-            triage = (r.text or "").strip()[:800]
-        except Exception as exc:
-            triage = f"triage unavailable: {exc!r}"
+        # Phase 2 (2026-09-26, option B): no LLM turn per alert (see
+        # realtime_ingest) — deterministic severity + laya shadow carry triage.
+        triage = "deterministic severity; no LLM turn (phase 2)"
         rec["triage"] = triage
         self.alerts[alert_id] = rec
 
@@ -152,8 +147,6 @@ class SecurityOperationsAgent:  # lite
             sev = "low"
         else:
             sev = "informational"
-        if re.search(r"\bescalate\b", triage, re.I):
-            sev = "critical"
         if sev in ("critical", "high"):
             inc_id = f"INC-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{self._n:06d}"
             self.incidents[inc_id] = {

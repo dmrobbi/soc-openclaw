@@ -158,19 +158,13 @@ class LiteTriageAgent:
         src_ip = self._field(a, "src_ip", "srcip", "source_ip")
         ts = self._field(a, "timestamp", "ts", default=datetime.now(timezone.utc).isoformat())
 
-        triage_text = ""
+        # Phase 2 (2026-09-26, wez-approved option B): NO LLM turn per alert.
+        # gemma soc-triage turns cost ~120k prompt tokens (multi-minute on the
+        # single-slot server). Deterministic severity (below, per the SOC
+        # contract) + the laya shadow (log-only) carry triage; the LLM stays
+        # on generation paths (narrator summaries, email replies).
+        triage_text = "deterministic severity; no LLM turn (phase 2)"
         triage_ok = False
-        try:
-            r = call_llm(
-                agent_id="soc-triage",
-                message=json.dumps(a, default=str)[:4000],
-                audit=False,
-                timeout=25.0,
-            )
-            triage_ok = bool(r.ok)
-            triage_text = (r.text or "").strip()
-        except Exception as exc:  # triage is best-effort
-            triage_text = f"triage unavailable: {exc!r}"
 
         # Option B (2026-09-26): deterministic severity per the SOC contract
         # (soc-agents/soc-triage/IDENTITY.md): 0-2 informational, 3-7 low,
@@ -192,10 +186,9 @@ class LiteTriageAgent:
             sev = "low"
         else:
             sev = "informational"
-        if triage_ok:
-            m = re.search(r"severity['\": =]+(critical|high|medium|low|info)", triage_text, re.I)
-            if m:
-                sev = m.group(1).lower()
+        # (LLM regex override removed 2026-09-26 — dead since inception: the
+        # regex never matched `"severity_class":` output; see
+        # soc-llm-control/docs/REPORT-OPTION-B-deterministic-severity.md S4.)
 
         alert = {
             "alert_id": alert_id,
