@@ -1,0 +1,19 @@
+# systemd timer for the SOC nightly compliance refresh.
+#
+# Fires daily at 06:30 UTC — 30 minutes after the daily-decisions
+# report (06:00 UTC) so the audit + realtime JSONLs the evidence
+# collector reads are fully shipped for the previous day.
+#
+# Install: see soc-compliance-daily.service (rendered by
+# deploy/install.sh, which enables this timer).
+
+[Unit]
+Description=SOC nightly compliance refresh timer (06:30 UTC daily)
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 UTC
+Persistent=true
+Unit=soc-compliance-daily.service
+
+[Install]
+WantedBy=timers.target

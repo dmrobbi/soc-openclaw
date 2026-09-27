@@ -42,6 +42,7 @@ Group=__SOC_USER__
 WorkingDirectory=/opt/soc-openclaw
 Environment="SOC_ROUTING_CONFIG=/home/__SOC_USER__/.openclaw/soc/soc-routing.yaml"
 Environment="SOC_EVIDENCE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/evidence"
+Environment="SOC_SCORE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/scores"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Bind to the Tailscale IP (default <lan-ip> for thing1) instead of
 # 127.0.0.1 so the dashboard is reachable from any tailnet device.
@@ -57,6 +58,8 @@ Environment="SOC_DASHBOARD_BIND=0.0.0.0"
 Environment="SOC_DASHBOARD_PORT=8771"
 Environment="SOC_DASHBOARD_C4_URL=http://127.0.0.1:8769"
 Environment="SOC_DASHBOARD_C3_URL=http://127.0.0.1:8768"
+Environment="SOC_DASHBOARD_C1_URL=http://127.0.0.1:8766"
+Environment="SOC_FLEET_EXTRA=evgen-d:192.168.122.44:rocky:8,evgen-e:192.168.122.14:rocky:9,evgen-f:192.168.122.101:rocky:10"
 # Port 8771 (not 8770) — 8770 is owned by soc-memory-mcp (Track A3).
 # Verified 2026-08-08 20:58 UTC during C2/C3/C4/D2 wire-up; see carry-forward.
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-dashboard/server.py
@@ -72,7 +75,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+# 2026-09-14: the compliance stores live under /home — without these
+# the dashboard cannot write evidence/snapshots/remediation log/audit
+# rows (EROFS was silently swallowed by try/except in some paths).
 ReadWritePaths=/opt/soc-openclaw
+ReadWritePaths=/home/__SOC_USER__/.openclaw/soc
+ReadWritePaths=/home/__SOC_USER__/.openclaw/compliance
+ReadWritePaths=/home/__SOC_USER__/.openclaw-wazuh
 
 [Install]
 WantedBy=multi-user.target

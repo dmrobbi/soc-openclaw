@@ -1,0 +1,174 @@
+# STIG classifier catalogue — Red Hat Enterprise Linux 9 V2R9
+#
+# Maps Wazuh rule IDs to DISA STIG Vuln IDs. This is the data
+# E1's `classify_stig_finding()` walks at alert-time to attach
+# `stig_id` + `control_id` to a Wazuh alert.
+#
+# Each entry:
+#   - wazuh_rules: list of Wazuh rule IDs that fire on a
+#     finding under this control
+#   - stig_id: the DISA Vuln id (matches the `id` field on the
+#     DISA STIG rule, e.g. SV-XXXXXX_rule; we keep the canonical
+#     V-XXXXXX form here for the user-facing narrative)
+#   - control_id: the NIST 800-53 control id (e.g. AC-2) — what
+#     the SOC E3 evidence collector keys on
+#   - title: short label (used in the LLM narrative)
+#   - severity: low|medium|high (SOC's risk rating; not the
+#     DISA CAT level)
+#   - nist_family: 2-letter family code (AC, AU, etc.)
+#   - evidence_required: list of evidence kinds the E3
+#     collector should look for (free-text; the classifier
+#     doesn't act on this; the human does)
+#   - remediate_hint: short text the LLM surfaces in the
+#     narrative when a finding fires
+#
+# Created 2026-08-11 by Ciceron for E1b. Scope is the 5-10
+# highest-traffic Wazuh rules in the fleet (40112, 5763, 53503,
+# 53104, 53105) + a few obvious high-impact additions. NOT
+# comprehensive; expand as alerts show up unmapped.
+#
+# Cross-references:
+#   - DISA STIG: config/stig-catalogue-disa-rhel-9.json
+#   - E1 design: docs/soc/agentic-soc-agentic-2026-08-06.md §E1
+#   - E1b carry-forward: OPEN-ITEMS.md
+
+version: 1
+benchmark: RHEL 9
+stig_release: V2R9
+last_updated: 2026-08-11
+
+entries:
+  # --- Linux audit (AU family) ----------------------------------
+  - wazuh_rules: [53503]
+    stig_id: RHEL-08-010010
+    control_id: AU-2
+    title: "Audit SUID binary execution"
+    severity: medium
+    nist_family: AU
+    evidence_required: [audit_log_lines, file_stat]
+    remediate_hint: >
+      The auditd rule for SUID/SGID execution is missing or
+      disabled. Add `-a always,exit -F path=/usr/bin/sudo -F
+      perm=x -k privileged` (and similar) to
+      /etc/audit/rules.d/privileged.rules, then
+      `service auditd restart`.
+
+  - wazuh_rules: [53104, 53105]
+    stig_id: RHEL-08-010020
+    control_id: AU-9
+    title: "Audit log files must be owned by root"
+    severity: medium
+    nist_family: AU
+    evidence_required: [file_stat, audit_log_lines]
+    remediate_hint: >
+      The audit log file is not owned by root. Run
+      `chown root /var/log/audit/audit.log` and verify
+      /etc/audit/auditd.conf has `log_file = /var/log/audit/audit.log`
+      with root:root ownership.
+
+  # --- SSH config (AC family) -----------------------------------
+  - wazuh_rules: [5763]
+    stig_id: RHEL-08-010340
+    control_id: AC-7
+    title: "SSH brute-force attempt rate exceeded"
+    severity: high
+    nist_family: AC
+    evidence_required: [auth_log_lines, source_ip]
+    remediate_hint: >
+      Multiple SSH login failures from the same source IP. Block
+      the source IP at the host firewall (iptables -I INPUT -s
+      <srcip> -j DROP) and ensure /etc/ssh/sshd_config sets
+      `MaxAuthTries 3` and `LoginGraceTime 60`.
+
+  - wazuh_rules: [40112]
+    stig_id: RHEL-08-010350
+    control_id: AC-2
+    title: "SSH brute-force-then-success (potential credential compromise)"
+    severity: high
+    nist_family: AC
+    evidence_required: [auth_log_lines, source_ip, last_5_login_attempts]
+    remediate_hint: >
+      A successful SSH login followed a brute-force burst — this
+      is a likely credential compromise. Force password rotation
+      on the target account, audit the last 50 auth events, and
+      check for new SSH keys in ~/.ssh/authorized_keys.
+
+  # --- PAM / password policy (IA family) -------------------------
+  - wazuh_rules: [5501, 5502, 5503]
+    stig_id: RHEL-08-020100
+    control_id: IA-5
+    title: "PAM password complexity policy violated"
+    severity: medium
+    nist_family: IA
+    evidence_required: [pam_config, last_password_change]
+    remediate_hint: >
+      Password does not meet the complexity policy. Verify
+      /etc/security/pwquality.conf sets minlen=15,
+      dcredit=-1, ucredit=-1, lcredit=-1, ocredit=-1, and
+      that pam_pwquality.so is required in
+      /etc/pam.d/system-auth.
+
+  # --- File permissions (AC family) ------------------------------
+  - wazuh_rules: [53100]
+    stig_id: RHEL-08-010030
+    control_id: AC-3
+    title: "World-writable file in /etc"
+    severity: medium
+    nist_family: AC
+    evidence_required: [file_stat, last_3_audit_lines]
+    remediate_hint: >
+      A file in /etc is world-writable. Run
+      `chmod o-w <path>` and audit who last touched it via
+      `ausearch -f <path>`.
+
+  - wazuh_rules: [53101]
+    stig_id: RHEL-08-010031
+    control_id: AC-3
+    title: "Unowned file in /etc"
+    severity: medium
+    nist_family: AC
+    evidence_required: [file_stat]
+    remediate_hint: >
+      A file in /etc has no valid owner. Run
+      `chown root <path>` (or the appropriate service account)
+      and confirm /etc/passwd / /etc/group have a matching entry.
+
+  # --- Kernel sysctl (SC family) ---------------------------------
+  - wazuh_rules: [51281]
+    stig_id: RHEL-08-040001
+    control_id: SC-7
+    title: "IP forwarding is enabled (should be disabled)"
+    severity: high
+    nist_family: SC
+    evidence_required: [sysctl_value, last_3_netfilter_drops]
+    remediate_hint: >
+      `net.ipv4.ip_forward` is non-zero. Run
+      `sysctl -w net.ipv4.ip_forward=0` and persist in
+      /etc/sysctl.d/99-stig.conf.
+
+  # --- systemd / service hardening (CM family) -------------------
+  - wazuh_rules: [60701]
+    stig_id: RHEL-08-040700
+    control_id: CM-7
+    title: "Unapproved service enabled"
+    severity: low
+    nist_family: CM
+    evidence_required: [systemctl_status, service_unit]
+    remediate_hint: >
+      A non-approved systemd service is enabled. Run
+      `systemctl disable <unit>` and `systemctl mask <unit>` if
+      the service should never run on this host.
+
+  # --- Audit rules tampering (AU family) -------------------------
+  - wazuh_rules: [80701]
+    stig_id: RHEL-08-030120
+    control_id: AU-9
+    title: "auditd rules file modified at runtime"
+    severity: high
+    nist_family: AU
+    evidence_required: [audit_rules_diff, last_3_audit_lines]
+    remediate_hint: >
+      The auditd rules were modified at runtime via `auditctl`.
+      Snapshot the current rules (`auditctl -l > /tmp/audit-rules.txt`),
+      compare to /etc/audit/rules.d/*.rules, and reload the
+      canonical ruleset via `service auditd restart`.

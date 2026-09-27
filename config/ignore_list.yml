@@ -1,0 +1,42 @@
+# ignore_list.yml — STIG rule exception list ("need not be run").
+#
+# Rules listed here are DESELECTED from OpenSCAP scans via an XCCDF
+# tailoring file (extends the scan profile, select=false). Excluded
+# rules return "notselected" in the scan results and are excluded
+# from evidence grading and scoring — they never pass or fail, they
+# simply don't run.
+#
+# Matching: short rule names (e.g. `aide_build_database`) resolve to
+#   the full xccdf id in the datastream used for the scan host
+#   (xccdf_org.ssgproject.content_rule_aide_build_database); full
+#   xccdf ids also accepted. Entries matching nothing in the host's
+#   datastream are logged (WARNING) and skipped — a typo never breaks
+#   a scan, and the scan runs WITHOUT that exclusion.
+#
+# Where it applies: every scan path (sudo-mode remote scans and the
+#   user-mode oscap-ssh fallback), host pages and fleet scans.
+#   Per-host entries key on the scan host name (C2 agent name).
+#
+# Reload: read fresh at each scan (no service restart needed).
+#
+# Schema:
+#   global:                 applies to every host
+#     - rule: <short-or-full-rule-id>
+#       reason: "why it's excluded (shown in logs/reports)"
+#   hosts:
+#     <host-name>:
+#       - rule: ...
+#         reason: "..."
+
+version: 1
+
+global: []
+# example:
+#   - rule: aide_build_database
+#     reason: "db rebuild churns nightly on this host; reviewed manually"
+
+hosts: {}
+# example:
+#   evgen-a:
+#     - rule: is_fips_mode_enabled
+#       reason: "fips crypto policy breaks the demo service"

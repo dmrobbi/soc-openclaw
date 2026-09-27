@@ -47,7 +47,59 @@ connected` until the agent daemon starts and checks in (keepalive every
 based on keepalive age — that freshness view is what the C2 manager-mcp
 serves.
 
-## 3. What the SOC does with a new agent
+## 3. REQUIRED: the "System inventory" block (syscollector)
+
+The agent's `ossec.conf` must contain a `<wodle name="syscollector">`
+block. **A minimal hand-written config without it silently disables
+system inventory** — the module never starts, packages/processes/ports/
+users never sync, and the Vulnerability Detector produces no findings
+for that host (alerts still flow, so everything looks healthy). This
+was a real month-long blind spot: the host's DB froze the day the
+minimal config landed.
+
+Verification that inventory is flowing (run on the SOC host, using the
+indexer creds env):
+
+```python
+# python3 - (sys.path.insert('/home/wez/.openclaw/soc'); import indexer)
+import indexer
+count = indexer.req(
+    'GET', '/wazuh-states-inventory-packages-*/_count',
+    {'query': {'term': {'agent.name': '<NEW-HOST>'}}})
+print(count['count'])   # must be > 0 within ~2 min of agent start
+```
+
+Required block (copy into `ossec.conf` before `</ossec_config>`):
+
+```xml
+<!-- System inventory -->
+<wodle name="syscollector">
+  <disabled>no</disabled>
+  <interval>1h</interval>
+  <scan_on_start>yes</scan_on_start>
+  <hardware>yes</hardware>
+  <os>yes</os>
+  <network>yes</network>
+  <packages>yes</packages>
+  <ports all="yes">yes</ports>
+  <processes>yes</processes>
+  <users>yes</users>
+  <groups>yes</groups>
+  <services>yes</services>
+  <browser_extensions>yes</browser_extensions>
+
+  <!-- Database synchronization settings -->
+  <synchronization>
+    <max_eps>10</max_eps>
+  </synchronization>
+</wodle>
+```
+
+Then `sudo systemctl restart wazuh-agent` and check the module started:
+`grep -i syscollector /var/ossec/logs/ossec.log` → "Module started" +
+"Starting evaluation" / "Evaluation finished".
+
+## 4. What the SOC does with a new agent
 
 Nothing needs configuring: the manager's integration
 (`agentic-soc-send.py`) fires on alerts from **any** agent; the alert is
@@ -56,7 +108,7 @@ on the dashboard. Group-specific policies (e.g. web servers vs
 workstations) are a Wazuh concern: assign agent groups via
 `manage_agents`/`agent_groups` and match them with Wazuh rules.
 
-## 4. Acting on a managed system (C2)
+## 5. Acting on a managed system (C2)
 
 The manager-mcp exposes read-only fleet tools by default
 (`list_agents`, `get_agent`, `get_rule_info`, ...) and a gated
@@ -72,7 +124,7 @@ Keep it off unless an agent (human or sub-agent) is wired up to approve
 restarts — an LLM-triggered restart of production boxes is a policy
 decision, not a default.
 
-## 5. OpenClaw side
+## 6. OpenClaw side
 
 Sub-agents (the LLM half) are registered on the OpenClaw gateway by
 `agents/bootstrap-fleet.sh` and live under `$SOC_AGENTS_DIR/<id>/`.
@@ -81,7 +133,7 @@ Their LLM calls go through `lib/llm_runtime.py`, which prefers the
 (`/api/generate`). Audit rows for every LLM call land in the SOC audit
 log (Track B), which the dashboard's Scores/Tenants views read.
 
-## 6. Removing a system
+## 7. Removing a system
 
 ```bash
 docker exec wazuh-stack-wazuh.manager-1 /var/ossec/bin/manage_agents -r <AGENT_ID>

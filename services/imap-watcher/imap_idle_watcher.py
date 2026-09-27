@@ -717,6 +717,19 @@ class ImapWatcher:
             f"action={decision['action']} reason={decision['reason']}",
         )
 
+        # Laya shadow (Phase 1.3 — log-only; LAYA_MODE env: off|shadow|gated)
+        try:
+            from laya_shadow import LayaShadow, EMAIL_QUESTIONS, build_email_state
+            sh = LayaShadow()
+            if sh.enabled:
+                sh.predict(build_email_state(from_addr, subject, body, decision.get("action"), in_reply_to),
+                           dict(EMAIL_QUESTIONS),
+                           context={"uid": uid, "message_id": message_id,
+                                    "action": decision.get("action"),
+                                    "matched_incident_id": decision.get("matched_incident_id")})
+        except Exception:
+            pass  # shadow must never break mail handling
+
         action = decision["action"]
         try:
             if action == "review_later":

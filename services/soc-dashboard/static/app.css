@@ -120,3 +120,26 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
 .score-bar .score-fill.good { background: var(--good); }
 .score-bar .score-fill.warn { background: var(--warn); }
 .score-bar .score-fill.bad  { background: var(--bad); }
+
+/* Buttons (2026-09-13) — run-scan / compliance / view-STIG actions. */
+.btn { display: inline-block; padding: 7px 16px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg-elev-2); color: var(--fg);
+  font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; }
+.btn:hover { background: #262c36; text-decoration: none; border-color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.btn-row select { display: inline-block; padding: 7px 12px; border: 1px solid var(--border);
+  border-radius: 6px; background: #1b2028; color: var(--text, #e6e9ef); font: inherit; }
+.btn-row select:hover { border-color: var(--accent); }
+
+/* Task pane bottom bar (2026-09-13) — vCenter-style running/recent tasks. */
+.taskbar { position: fixed; bottom: 0; left: 0; right: 0; display: flex;
+  gap: 20px; align-items: center; padding: 8px 24px;
+  background: var(--bg-elev); border-top: 1px solid var(--border);
+  font-size: 12px; z-index: 30; overflow-x: auto; min-height: 34px; }
+.taskbar .tb-item { color: var(--fg-dim); white-space: nowrap; }
+.taskbar .tb-item.ok { color: var(--good); }
+.taskbar .tb-item.fail { color: var(--bad); }
+.taskbar .tb-item.run { color: var(--warn); font-weight: 600; }
+.taskbar .tb-all { margin-left: auto; color: var(--accent); white-space: nowrap; }
+main { padding-bottom: 56px; }

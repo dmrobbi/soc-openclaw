@@ -1,0 +1,145 @@
+# STIG classifier catalogue — Canonical Ubuntu 22.04 LTS V2R8
+#
+# Maps Wazuh rule IDs to DISA STIG Vuln IDs for the Ubuntu
+# 22.04 STIG. The mapping is per-Wazuh-rule because most rules
+# fire on a single underlying check; the few rules that fire on
+# multiple checks (e.g. generic "file perm changed") are listed
+# with a single most-likely control + a comment.
+#
+# See catalogue-rhel-9-v2r9.yaml for the schema docstring.
+#
+# Created 2026-08-11 by Ciceron for E1b. Scope: the same 5-10
+# highest-traffic Wazuh rules as the RHEL catalogue, with Ubuntu
+# Vuln IDs.
+
+version: 1
+benchmark: Ubuntu 22.04 LTS
+stig_release: V2R8
+last_updated: 2026-08-11
+
+entries:
+  # --- Linux audit (AU family) ----------------------------------
+  - wazuh_rules: [53503]
+    stig_id: UBTU-22-232010
+    control_id: AU-2
+    title: "Audit SUID binary execution"
+    severity: medium
+    nist_family: AU
+    evidence_required: [audit_log_lines, file_stat]
+    remediate_hint: >
+      The auditd rule for SUID/SGID execution is missing or
+      disabled. Add `-a always,exit -F path=/usr/bin/sudo -F
+      perm=x -k privileged` to /etc/audit/rules.d/privileged.rules
+      and run `augenrules --load`.
+
+  - wazuh_rules: [53104, 53105]
+    stig_id: UBTU-22-232015
+    control_id: AU-9
+    title: "Audit log files must be owned by root"
+    severity: medium
+    nist_family: AU
+    evidence_required: [file_stat, audit_log_lines]
+    remediate_hint: >
+      The audit log file is not owned by root. Run
+      `chown root /var/log/audit/audit.log`.
+
+  # --- SSH config (AC family) -----------------------------------
+  - wazuh_rules: [5763]
+    stig_id: UBTU-22-255015
+    control_id: AC-7
+    title: "SSH brute-force attempt rate exceeded"
+    severity: high
+    nist_family: AC
+    evidence_required: [auth_log_lines, source_ip]
+    remediate_hint: >
+      Multiple SSH login failures from the same source IP. Block
+      the source IP at the host firewall (iptables -I INPUT -s
+      <srcip> -j DROP) and ensure /etc/ssh/sshd_config.d/*.conf
+      set `MaxAuthTries 3`.
+
+  - wazuh_rules: [40112]
+    stig_id: UBTU-22-255020
+    control_id: AC-2
+    title: "SSH brute-force-then-success (potential credential compromise)"
+    severity: high
+    nist_family: AC
+    evidence_required: [auth_log_lines, source_ip, last_5_login_attempts]
+    remediate_hint: >
+      A successful SSH login followed a brute-force burst. Force
+      password rotation on the target account, audit the last 50
+      auth events, and check for new SSH keys in
+      ~/.ssh/authorized_keys.
+
+  # --- PAM / password policy (IA family) -------------------------
+  - wazuh_rules: [5501, 5502, 5503]
+    stig_id: UBTU-22-291010
+    control_id: IA-5
+    title: "PAM password complexity policy violated"
+    severity: medium
+    nist_family: IA
+    evidence_required: [pam_config, last_password_change]
+    remediate_hint: >
+      Password does not meet the complexity policy. Verify
+      /etc/security/pwquality.conf sets minlen=15 and that
+      pam_pwquality.so is required in /etc/pam.d/common-password.
+
+  # --- File permissions (AC family) ------------------------------
+  - wazuh_rules: [53100]
+    stig_id: UBTU-22-213010
+    control_id: AC-3
+    title: "World-writable file in /etc"
+    severity: medium
+    nist_family: AC
+    evidence_required: [file_stat, last_3_audit_lines]
+    remediate_hint: >
+      A file in /etc is world-writable. Run `chmod o-w <path>`
+      and audit who last touched it.
+
+  - wazuh_rules: [53101]
+    stig_id: UBTU-22-213011
+    control_id: AC-3
+    title: "Unowned file in /etc"
+    severity: medium
+    nist_family: AC
+    evidence_required: [file_stat]
+    remediate_hint: >
+      A file in /etc has no valid owner. Run `chown root <path>`
+      and confirm /etc/passwd / /etc/group have a matching entry.
+
+  # --- AppArmor (SC family) --------------------------------------
+  - wazuh_rules: [51281]
+    stig_id: UBTU-22-252015
+    control_id: SC-7
+    title: "AppArmor profile missing or in complain mode"
+    severity: high
+    nist_family: SC
+    evidence_required: [apparmor_status, profile_files]
+    remediate_hint: >
+      AppArmor is enabled but a required profile is in complain
+      mode (or missing). Run `aa-enforce <profile>` and verify
+      /etc/apparmor.d/<profile> has `flags=(attach_disconnected)`.
+
+  # --- systemd / service hardening (CM family) -------------------
+  - wazuh_rules: [60701]
+    stig_id: UBTU-22-251010
+    control_id: CM-7
+    title: "Unapproved service enabled"
+    severity: low
+    nist_family: CM
+    evidence_required: [systemctl_status, service_unit]
+    remediate_hint: >
+      A non-approved systemd service is enabled. Run
+      `systemctl disable <unit>` and `systemctl mask <unit>` if
+      the service should never run on this host.
+
+  # --- Audit rules tampering (AU family) -------------------------
+  - wazuh_rules: [80701]
+    stig_id: UBTU-22-232020
+    control_id: AU-9
+    title: "auditd rules file modified at runtime"
+    severity: high
+    nist_family: AU
+    evidence_required: [audit_rules_diff, last_3_audit_lines]
+    remediate_hint: >
+      The auditd rules were modified at runtime via `auditctl`.
+      Snapshot, compare to /etc/audit/rules.d/*.rules, and reload.

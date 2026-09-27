@@ -663,13 +663,28 @@ def parse_xccdf(path: str) -> Dict[str, Any]:
     root = tree.getroot()
     benchmark = root
     if _local_tag(benchmark) != "Benchmark":
-        # Some XCCDFs wrap the Benchmark in a <BenchmarkCollection>;
-        # find the inner Benchmark.
-        for q in _xccdf_any("Benchmark"):
-            inner = root.find(q)
-            if inner is not None:
-                benchmark = inner
+        # Two wrap shapes exist:
+        #   1. raw XCCDF wrapped in <BenchmarkCollection> (one level);
+        #   2. SCAP 1.2/1.3 DATASTREAMS (ssg-*-ds.xml): the Benchmark
+        #      sits at ds:data-stream-collection → ds:data-stream →
+        #      ds:checklists → ds:component → {xccdf-1.2}Benchmark.
+        #      Non-checklist components (OVAL/SCE) carry no Benchmark,
+        #      so prefer the first Benchmark that actually contains
+        #      <Rule> elements; fall back to the first found.
+        cands = [el for el in root.iter() if _local_tag(el) == "Benchmark"]
+        for c in cands:
+            if any(True for x in c.iter() if _local_tag(x) == "Rule"):
+                benchmark = c
                 break
+        else:
+            if cands:
+                benchmark = cands[0]
+            else:
+                for q in _xccdf_any("Benchmark"):
+                    inner = root.find(q)
+                    if inner is not None:
+                        benchmark = inner
+                        break
 
     controls: List[Dict[str, Any]] = []
     seen_ids: set = set()
@@ -1229,7 +1244,7 @@ def _smoke() -> int:
     r = tool_applicable_for_tenant({"tenant_id": "example-soc"})
     assert r["ok"], r
     assert r["tenant_baseline"] == "high", r
-    # bedimsecurity has the full 17+ family set
+    # example-soc has the full 17+ family set
     assert r["total"] >= 1
     # every control must be in the "high" baseline and in a
     # tag the tenant lists. The catalogue now varies by tenant
@@ -1245,11 +1260,12 @@ def _smoke() -> int:
         assert c.get("family") in tags, c
         assert c["id"] in cat_by_id
 
-    # applicable_for_tenant example-soc
-    r = tool_applicable_for_tenant({"tenant_id": "example-soc"})
+    # applicable_for_tenant example-soc-2 (sandbox tenant:
+    # moderate baseline, small applicability list)
+    r = tool_applicable_for_tenant({"tenant_id": "example-soc-2"})
     assert r["ok"]
     assert r["tenant_baseline"] == "moderate"
-    # stsgym has the smaller applicability list (5 tags)
+    # example-soc-2 has the smaller applicability list (5 tags)
     assert r["total"] <= len(r["controls"]), r
 
     # applicable_for_tenant bad id

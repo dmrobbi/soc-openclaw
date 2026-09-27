@@ -1,0 +1,46 @@
+# systemd unit for the SOC hourly healthcheck.
+#
+# Runs deploy/healthcheck.sh (units, ports, fleet, sub-agents, secrets
+# perms). Exit 0 = all green. On failure, systemd starts
+# soc-healthcheck-alert@soc-healthcheck.service (OnFailure below),
+# which notifies the operator (OpenClaw chat, SMTP fallback).
+#
+# Runs as __SOC_USER__ (wez): the sub-agent check shells out to the
+# openclaw CLI, which is NOT on root's PATH (2026-09-13 lesson), and
+# the secret files it stats are wez-owned.
+#
+# Install: rendered from deploy/templates by deploy/install.sh; fired
+# hourly by soc-healthcheck.timer.
+
+[Unit]
+Description=SOC hourly healthcheck (deploy/healthcheck.sh)
+Documentation=file:///opt/soc-openclaw/deploy/healthcheck.sh
+After=network-online.target
+Wants=network-online.target
+# 2026-09-17: %n without a trailing .service — appending one produced
+# the doubled instance soc-healthcheck-alert@soc-healthcheck.service.service
+# (%i = 'soc-healthcheck.service.service'); unit references auto-append
+# .service, so this expands to soc-healthcheck-alert@soc-healthcheck.service
+# and %i stays exactly the failed unit's name.
+OnFailure=soc-healthcheck-alert@%n
+
+[Service]
+Type=oneshot
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/home/__SOC_USER__
+# 2026-09-20: /usr/bin/node (22.23.2) fails openclaw runtime admission
+# (node:sqlite NUL truncation, nodejs/node#61954); nvm node 26 must win
+# PATH, and the CLI's nvm retry is disabled at cwd=/ (systemd default).
+Environment="PATH=/home/__SOC_USER__/.nvm/versions/node/v26.8.2/bin:/home/__SOC_USER__/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="OPENCLAW_BIN=/home/__SOC_USER__/.nvm/versions/node/v26.8.2/bin/openclaw"
+Environment="SOC_MAILBOX_ENV=/home/__SOC_USER__/.openclaw/workspace/secrets/reports-bedimsecurity-mailbox.env"
+ExecStart=/opt/soc-openclaw/deploy/healthcheck.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-healthcheck
+TimeoutStartSec=300
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

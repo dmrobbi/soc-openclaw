@@ -90,8 +90,15 @@ DASHBOARD_TOOLS = (
     "fleet_status", "fleet_summary",
     "stig_overview", "stig_findings",
     "stig_host_view",
+    "host_control_status",
     "fleet_host_view", "run_scan",
+    "run_host_compliance_scan",
+    "remediate_control",
+    "tasks_list", "task_get",
     "compliance_report", "stig_report", "run_fleet_scan",
+    "agent_logs",
+    "vulnerability_findings", "fleet_cve_overview",
+    "packages_search", "package_diff",
 )
 
 
@@ -140,24 +147,31 @@ def _load_routing_tenants() -> Optional[Dict[str, Any]]:
         import yaml  # noqa: F401
     except ImportError:
         return None
-    # __file__ is soc-dashboard/server.py, so the repo root
-    # is 4 levels up: soc-dashboard/ -> soc/ -> scripts/ -> REPO.
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))))
-    for path in (os.path.join(repo_root, "config", "soc-routing.yaml"),
-                 os.path.join(repo_root, "config",
-                              "soc-routing.yaml.example")):
-        if os.path.exists(path):
-            try:
-                with open(path) as f:
-                    raw = yaml.safe_load(f)
-                tenants = raw.get("tenants") or {}
-                return {tid: t.get("display_name", tid)
-                        for tid, t in tenants.items()}
-            except Exception as e:
-                sys.stderr.write(
-                    f"[soc-dashboard] routing config load failed: {e}\n")
-                return None
+    # Honor SOC_ROUTING_CONFIG first — the same live routing config every
+    # other component reads (the systemd unit sets it). Then repo-relative
+    # fallbacks: __file__ is soc-dashboard/server.py, so the repo root is
+    # 3 levels up: soc-dashboard/ -> services/ -> REPO.
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    env_path = os.environ.get("SOC_ROUTING_CONFIG")
+    candidates = ([env_path] if env_path else []) + [
+        os.path.join(repo_root, "config", "soc-routing.yaml"),
+        os.path.join(repo_root, "config", "soc-routing.yaml.example"),
+    ]
+    for path in candidates:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                raw = yaml.safe_load(f)
+            tenants = raw.get("tenants") or {}
+            return {tid: (t.get("display_name", tid)
+                          if isinstance(t, dict) else tid)
+                    for tid, t in tenants.items()}
+        except Exception as e:
+            sys.stderr.write(
+                f"[soc-dashboard] routing config load failed ({path}): {e}\n")
+            continue
     return None
 
 
@@ -447,6 +461,86 @@ def tool_tickets_list_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
         "ok": False, "error": f"unexpected C3 response: {body!r}"}
 
 
+def _mask_ip_value(v: str) -> str:
+    """"100.115.156.115" -> "100.x.x.x" (first octet only)."""
+    m = re.fullmatch(r"(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}", str(v).strip())
+    return f"{m.group(1)}.x.x.x" if m else v
+
+
+def _redact_ips(obj: Any) -> Any:
+    """Env-gated (SOC_DASHBOARD_MASK_IPS=1) response redaction for
+    share-safe screenshots: mask every IPv4 under ip-ish keys to its
+    first octet. Host names, scores, statuses pass through."""
+    if os.environ.get("SOC_DASHBOARD_MASK_IPS", "0") != "1":
+        return obj
+    keys = {"ip", "agent_ip", "host_ip", "ip_address", "peer_ip"}
+    if isinstance(obj, dict):
+        return {k: (_mask_ip_value(v) if k in keys and isinstance(v, str)
+                    else _redact_ips(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_ips(v) for v in obj]
+    return obj
+
+
+def tool_host_control_status(args: Dict[str, Any]) -> Dict[str, Any]:
+    """host_control_status(day=None, tenant_id=None, host=None)
+    -> per-host per-control attribution from the day's archived
+    OpenSCAP scan results.
+
+    Read-only wrapper over services/scanner/soc_scanner
+    .host_control_status(). `day` defaults to the most recent day
+    (today, stepping back up to 7 days) with archived results.
+    Failing controls are enriched with catalogue metadata (title,
+    severity, automated) so the UI can render Remediate buttons —
+    fleet remediation keys on the failing (host, control) pairs."""
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    scanner_dir = os.path.join(soc_dir, "scanner")
+    for p in (soc_dir, scanner_dir):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    from soc_scanner import host_control_status as _hcs
+    import datetime as _dt
+    day_arg = args.get("day")
+    res = None
+    last_err = None
+    if day_arg:
+        res = _hcs(str(day_arg), tenant_id=args.get("tenant_id"),
+                   host=args.get("host"))
+    else:
+        today = _dt.datetime.now(_dt.timezone.utc).date()
+        for back in range(7):
+            cand = str(today - _dt.timedelta(days=back))
+            res = _hcs(cand, tenant_id=args.get("tenant_id"),
+                       host=args.get("host"))
+            if res.get("ok") and res.get("hosts"):
+                break
+            last_err = res.get("error") or f"no results for {cand}"
+            res = None
+    if not res or not res.get("ok"):
+        return {"ok": False, "tool": "host_control_status",
+                "error": (res or {}).get("error")
+                or f"no scan results in the last 7 days (last: {last_err})"}
+    # Enrich failing controls with catalogue metadata so the UI can
+    # label rows and disable buttons for non-automated controls.
+    meta: Dict[str, Any] = {}
+    try:
+        from soc_stig import tool_applicable_for_tenant
+        for c in tool_applicable_for_tenant(
+                {"tenant_id": res.get("tenant")}).get("controls", []):
+            meta[c.get("id")] = c
+    except Exception:
+        pass  # unknown tenant / catalogue hiccup — ship ids without meta
+    for h in (res.get("hosts") or {}).values():
+        h["failed_meta"] = [
+            {"control_id": cid,
+             "title": (meta.get(cid) or {}).get("title"),
+             "severity": (meta.get(cid) or {}).get("severity"),
+             "automated": bool((meta.get(cid) or {}).get("automated"))}
+            for cid in (h.get("failed") or [])]
+    res["tool"] = "host_control_status"
+    return res
+
+
 def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
     """fleet_host_view(agent_id) -> drill-down for one managed host.
 
@@ -461,6 +555,21 @@ def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
     c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
     code, agent = _http_post(f"{c2}/tools/get_agent",
                              {"agent_id": aid}, timeout=8.0)
+    if code != 200 or not isinstance(agent, dict) or not agent.get("ok"):
+        # 2026-09-16: the URL drill-downs carry the agent NAME (the URL
+        # segment), but Wazuh get_agent wants the numeric id (400 on a
+        # name). Resolve name-or-id via list_agents and retry once —
+        # the /fleet/<name> pages rendered the error view before this.
+        lcode, lbody = _http_post(f"{c2}/tools/list_agents",
+                                  {"limit": 200}, timeout=8.0)
+        rows = (lbody or {}).get("agents") \
+            if isinstance(lbody, dict) else []
+        match = next((str(r.get("id")) for r in rows
+                      if str(r.get("name") or "") == aid
+                      or str(r.get("id") or "") == aid), None)
+        if match:
+            code, agent = _http_post(f"{c2}/tools/get_agent",
+                                     {"agent_id": match}, timeout=8.0)
     if code != 200 or not isinstance(agent, dict) or not agent.get("ok"):
         return {"ok": False, "tool": "fleet_host_view",
                 "error": f"C2 get_agent failed ({code})", "agent_id": aid}
@@ -482,9 +591,30 @@ def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
 
     stig = tool_stig_host_view({"host": name})
 
-    _, minfo = _http_post(f"{c2}/tools/get_manager_info", {})
-    mutations = bool((minfo or {}).get("mutations_enabled")) \
-        if isinstance(minfo, dict) else False
+    # OpenSCAP control attribution for this host from the latest
+    # archived scan day (read-only; feeds the Remediate buttons).
+    host_controls = None
+    try:
+        hcs = tool_host_control_status({"host": name})
+        if hcs.get("ok"):
+            hc = (hcs.get("hosts") or {}).get(name)
+            if hc:
+                host_controls = {
+                    "day": hcs.get("day"),
+                    "tenant": hcs.get("tenant"),
+                    "failed": hc.get("failed") or [],
+                    "failed_meta": hc.get("failed_meta") or [],
+                    "total": len(hc.get("controls") or {})}
+    except Exception as e:
+        host_controls = {"error": repr(e)}
+
+    # mutations gate: read the manager's /healthz, which reports the
+    # SOC_MANAGER_MCP_ALLOW_MUTATIONS state directly. (2026-09-13 fix:
+    # get_manager_info returns raw Wazuh /manager/info data, which has
+    # no mutations key — the Run Scan button was permanently disabled.)
+    mcode, mbody = _http_get(f"{c2}/healthz", timeout=5.0)
+    mutations = bool((mbody or {}).get("mutations_enabled")) \
+        if mcode == 200 and isinstance(mbody, dict) else False
 
     return {
         "ok": True,
@@ -493,6 +623,7 @@ def tool_fleet_host_view(args: Dict[str, Any]) -> Dict[str, Any]:
         "alerts": alerts,
         "alerts_total": len(alerts),
         "stig": stig,
+        "controls": host_controls,
         "mutations_enabled": mutations,
     }
 
@@ -513,6 +644,91 @@ def tool_run_scan_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
     return body
 
 
+def tool_agent_logs(args: Dict[str, Any]) -> Dict[str, Any]:
+    """agent_logs(agent, hours=24, min_level=0, size=200) -> recent Wazuh
+    alerts for one agent. Proxies C1 soc-wazuh-mcp search_alerts (which
+    handles the agent.name.keyword match for tokenized names)."""
+    agent = (args or {}).get("agent")
+    if not agent:
+        raise ValueError("agent is required")
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    hours = max(1, min(int((args or {}).get("hours") or 24), 24 * 30))
+    payload = {
+        "agent": str(agent),
+        "time_range": f"{hours}h",
+        "min_level": max(0, int((args or {}).get("min_level") or 0)),
+        "size": max(1, min(int((args or {}).get("size") or 200), 500)),
+    }
+    code, body = _http_post(f"{c1}/tools/search_alerts", payload,
+                            timeout=20.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 search_alerts failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {
+        "ok": True, "tool": "agent_logs", "agent": str(agent),
+        "range": body.get("range"), "total": body.get("total"),
+        "hits": body.get("hits", []),
+    }
+
+
+def tool_vulnerability_findings(args: Dict[str, Any]) -> Dict[str, Any]:
+    """vulnerability_findings(agent=None, package=None, cve=None,
+    severity=None, size=200) -> CVE findings from the Vulnerability
+    Detector state index (proxy to C1 search_vulnerabilities)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    args = args or {}
+    payload = {k: v for k, v in args.items()
+               if k in ("agent", "package", "cve", "severity") and v}
+    payload["size"] = max(1, min(int(args.get("size") or 200), 500))
+    code, body = _http_post(f"{c1}/tools/search_vulnerabilities", payload,
+                            timeout=20.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 search_vulnerabilities failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "vulnerability_findings", **body}
+
+
+def tool_fleet_cve_overview(args: Dict[str, Any]) -> Dict[str, Any]:
+    """fleet_cve_overview() -> per-host CVE severity rollup (C1 proxy)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    code, body = _http_post(f"{c1}/tools/fleet_cve_overview", {},
+                            timeout=20.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 fleet_cve_overview failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "fleet_cve_overview",
+            "by_host": body.get("by_host", {}),
+            "totals": body.get("totals", {})}
+
+
+def tool_packages_search(args: Dict[str, Any]) -> Dict[str, Any]:
+    """packages_search(name=None, q=None, size=500) -> package inventory
+    rows with CVE-count annotation (proxy to C1 search_packages)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    args = args or {}
+    payload = {k: args[k] for k in ("name", "q", "size") if args.get(k)}
+    code, body = _http_post(f"{c1}/tools/search_packages", payload,
+                            timeout=30.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 search_packages failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "packages_search", **body}
+
+
+def tool_package_diff(args: Dict[str, Any]) -> Dict[str, Any]:
+    """package_diff(agent_a, agent_b) -> installed-package comparison
+    (proxy to C1 package_diff)."""
+    c1 = os.environ.get("SOC_DASHBOARD_C1_URL", "http://127.0.0.1:8766")
+    args = args or {}
+    payload = {k: args.get(k) for k in ("agent_a", "agent_b")}
+    code, body = _http_post(f"{c1}/tools/package_diff", payload,
+                            timeout=45.0)
+    if code != 200 or not body.get("ok"):
+        raise ValueError(f"C1 package_diff failed: HTTP {code}, "
+                         f"{str(body)[:200]}")
+    return {"ok": True, "tool": "package_diff", **body}
+
+
 def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
     """compliance_report(day=None) -> full per-tenant, per-control
     compliance report: scores + evidence status + applicable controls,
@@ -520,9 +736,15 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
     day = args.get("day") or __import__("datetime").datetime.now(
         __import__("datetime").timezone.utc).strftime("%Y-%m-%d")
     soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, os.path.join(soc_dir, "services"))
+    # soc_dir is the services/ dir (server.py sits one level below it).
+    sys.path.insert(0, soc_dir)
     from soc_score import tool_score_all_tenants, tool_dashboard_score
-    from soc_evidence import tool_evidence_summary
+    try:
+        from soc_evidence import tool_evidence_summary
+    except ImportError:
+        # soc_evidence lives in stsgym-work; not ported yet — degrade
+        # instead of crashing the whole report.
+        tool_evidence_summary = None
     routing_cfg = os.environ.get("SOC_ROUTING_CONFIG") or None
     tenants: List[str] = []
     try:
@@ -540,6 +762,9 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
             detail.append({"tenant_id": tid, "error": repr(e)})
     ev_rows: Dict[str, Any] = {}
     for tid in tenants:
+        if tool_evidence_summary is None:
+            ev_rows[tid] = {"note": "soc_evidence module not available in this deployment"}
+            continue
         try:
             ev_rows[tid] = tool_evidence_summary({"tenant_id": tid, "day": day})
         except Exception as e:
@@ -562,11 +787,12 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
 def tool_stig_report(args: Dict[str, Any]) -> Dict[str, Any]:
     """stig_report() -> full STIG findings list + catalogue summary."""
     code4 = os.environ.get("SOC_DASHBOARD_C4_URL", DEFAULT_C4_URL)
-    _, findings = _http_post(f"{code4}/tools/stig_findings", {}, timeout=15.0)
+    _, findings = _http_post(f"{code4}/tools/query_stig_findings", {}, timeout=15.0)
     cat_path = os.environ.get(
         "SOC_STIG_CATALOGUE",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "config", "stig-catalogue.json"))
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+            "config", "stig-catalogue.json"))
     cat_summary: Dict[str, Any] = {}
     try:
         with open(cat_path, "r", encoding="utf-8") as f:
@@ -615,7 +841,7 @@ def tool_run_fleet_scan(args: Dict[str, Any]) -> Dict[str, Any]:
     # 2. compliance evidence harvest for every known tenant
     ev_summary = {}
     try:
-        sys.path.insert(0, os.path.join(soc_dir, "services"))
+        sys.path.insert(0, soc_dir)  # services/ dir — see note in tool_compliance_report
         from soc_evidence import tool_collect_evidence, tool_evidence_summary
         from soc_routing import get_config
         for tid in get_config().known_tenants():
@@ -633,7 +859,7 @@ def tool_run_fleet_scan(args: Dict[str, Any]) -> Dict[str, Any]:
     # 3. fleet-wide score recompute
     scores = {}
     try:
-        sys.path.insert(0, os.path.join(soc_dir, "services"))
+        sys.path.insert(0, soc_dir)  # services/ dir — see note in tool_compliance_report
         from soc_score import tool_score_all_tenants
         scores = tool_score_all_tenants({})
     except Exception as e:
@@ -647,6 +873,279 @@ def tool_run_fleet_scan(args: Dict[str, Any]) -> Dict[str, Any]:
         "ts": __import__("datetime").datetime.now(
             __import__("datetime").timezone.utc).isoformat(),
     }
+
+
+def tool_run_host_compliance_scan(args: Dict[str, Any]) -> Dict[str, Any]:
+    """run_host_compliance_scan(agent_id) -> MUTATING + moderate.
+
+    Per-host re-run of the compliance pipeline (2026-09-13):
+      1. Scoped Wazuh agent restart (fresh syscheck/FIM + vuln detector
+         for that host only).
+      2. Evidence re-collect for every known tenant (today).
+      3. Fleet-wide compliance score recompute.
+    Gated on SOC_MANAGER_MCP_ALLOW_MUTATIONS, read from C2 /healthz.
+    """
+    aid = str(args.get("agent_id") or "").strip()
+    if not aid:
+        raise ValueError("agent_id is required")
+    c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    steps: List[Dict[str, Any]] = []
+    day = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).strftime("%Y-%m-%d")
+
+    mcode, mbody = _http_get(f"{c2}/healthz", timeout=5.0)
+    if mcode != 200 or not isinstance(mbody, dict) \
+            or not mbody.get("mutations_enabled"):
+        return {"ok": False, "tool": "run_host_compliance_scan",
+                "error": "mutations disabled on C2 manager "
+                         "(SOC_MANAGER_MCP_ALLOW_MUTATIONS)"}
+
+    code, body = _http_post(f"{c2}/tools/run_scan", {"agent_id": aid},
+                            timeout=15.0)
+    steps.append({"step": "scoped agent restart", "code": code,
+                  "ok": code == 200})
+    if code != 200:
+        return {"ok": False, "tool": "run_host_compliance_scan",
+                "error": f"run_scan failed (HTTP {code})",
+                "steps": steps}
+
+    # 2. evidence re-collect for every known tenant
+    tenants: List[str] = []
+    try:
+        sys.path.insert(0, soc_dir)  # services/ dir
+        from soc_routing import get_config
+        tenants = list(get_config().known_tenants())
+    except Exception as e:
+        steps.append({"step": "tenant resolution", "ok": False,
+                      "error": repr(e)})
+
+    ev: Dict[str, Any] = {}
+    try:
+        from soc_evidence import tool_collect_evidence
+        for tid in tenants:
+            try:
+                r = tool_collect_evidence({"tenant_id": tid, "day": day})
+                ev[tid] = {"counts": r.get("counts"),
+                           "total_controls": r.get("total_controls")}
+            except Exception as e:
+                ev[tid] = {"error": repr(e)}
+        steps.append({"step": "evidence re-collect", "ok": True,
+                      "tenants": ev})
+    except Exception as e:
+        steps.append({"step": "evidence re-collect", "ok": False,
+                      "error": repr(e)})
+
+    # 3. score recompute
+    scores: Dict[str, Any] = {}
+    try:
+        from soc_score import tool_score_all_tenants
+        scores = tool_score_all_tenants({})
+    except Exception as e:
+        scores = {"error": repr(e)}
+    steps.append({"step": "score recompute",
+                  "ok": "error" not in scores})
+
+    return {"ok": True, "tool": "run_host_compliance_scan",
+            "agent_id": aid, "steps": steps, "scores": scores,
+            "tenants_scanned": tenants}
+
+
+def tool_remediate_control(args: Dict[str, Any]) -> Dict[str, Any]:
+    """remediate_control(control_id, tenant_id, confidence, dry_run)
+    -> MUTATING.
+
+    E2 STIG auto-remediation for one control (ported 2026-09-14):
+    snapshot current state (read-only check) -> confidence/tenant
+    gate -> apply the catalogue fix command -> verify with the check
+    command. Then re-collect evidence for the tenant (today) and
+    recompute its score so the pass grades immediately.
+
+    Layers of gating, in order:
+      1. C2 /healthz mutations_enabled (SOC_MANAGER_MCP_ALLOW_MUTATIONS)
+         — the same gate as the scan triggers. SKIPPED for dry_run
+         (2026-09-16): a dry run changes nothing (read-only check),
+         so it may validate the gates while real applies stay
+         mutation-gated.
+      2. The tenant routing config: `auto_remediate` must be in
+         allowed_actions AND auto_remediation_threshold met AND the
+         severity eligible.
+      3. dry_run (arg or SOC_REMEDIATION_DRY_RUN=1) — no system change.
+    Commands run as the dashboard service user; root-needing fixes
+    fail honestly (rc recorded) — use the CLI under sudo for those.
+    Every apply/rollback writes a snapshot + audit row + remediation
+    log entry (the rows soc_evidence grades into PASS evidence)."""
+    cid = str(args.get("control_id") or "").strip()
+    tid = str(args.get("tenant_id") or "").strip()
+    if not cid or not tid:
+        raise ValueError("control_id and tenant_id are required")
+    dry = bool(args.get("dry_run"))
+    c2 = os.environ.get("SOC_DASHBOARD_C2_URL", DEFAULT_C2_URL)
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    mcode, mbody = _http_get(f"{c2}/healthz", timeout=5.0)
+    mutations = bool(mcode == 200 and isinstance(mbody, dict)
+                     and mbody.get("mutations_enabled"))
+    if not mutations and not dry:
+        return {"ok": False, "tool": "remediate_control",
+                "error": "mutations disabled on C2 manager "
+                         "(SOC_MANAGER_MCP_ALLOW_MUTATIONS)",
+                "mutations_enabled": False}
+    if soc_dir not in sys.path:
+        sys.path.insert(0, soc_dir)
+    from soc_stig_remediate import tool_remediate_control as _remediate
+    res = _remediate({"control_id": cid, "tenant_id": tid,
+                      "confidence": args.get("confidence"),
+                      "dry_run": dry,
+                      "host": args.get("host"),
+                      "host_ip": args.get("host_ip")})
+    out: Dict[str, Any] = {"ok": True, "tool": "remediate_control",
+                           "remediation": res,
+                           "mutations_enabled": mutations}
+    if res.get("status") == "applied":
+        import datetime as _dt
+        day = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+        try:
+            from soc_evidence import tool_collect_evidence
+            ev = tool_collect_evidence({"tenant_id": tid, "day": day})
+            out["evidence"] = {"total_controls": ev.get("total_controls"),
+                               "counts": ev.get("counts")}
+        except Exception as e:
+            out["evidence"] = {"error": repr(e)}
+        try:
+            from soc_score import tool_compute_score
+            out["score"] = tool_compute_score({"tenant_id": tid,
+                                               "day": day})
+        except Exception as e:
+            out["score"] = {"error": repr(e)}
+    return out
+
+
+def _tasklog():
+    """Lazy services/soc_tasklog module (services/ on sys.path)."""
+    soc_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if soc_dir not in sys.path:
+        sys.path.insert(0, soc_dir)
+    import soc_tasklog
+    return soc_tasklog
+
+
+# Tasks recorded into the task log (vCenter-style pane): every
+# mutating/compliance trigger gets a running + done/failed row.
+_TASK_LOGGED_TOOLS = {
+    "run_scan": "wazuh_scan",
+    "run_host_compliance_scan": "compliance_scan",
+    "run_fleet_scan": "compliance_scan",
+    "remediate_control": "stig_remediate",
+}
+
+
+def _task_details(tool: str,
+                 args: Optional[Dict[str, Any]],
+                 result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Compact, human-readable details for task-log rows (2026-09-18:
+    the old rows carried only {tool, fleet_score} — task drill-downs
+    showed nothing about WHAT ran or why it failed). Cherry-picks
+    request context + the result's outcome fields; never dumps the
+    full result (fleet-scan results are huge) and never secrets."""
+    d: Dict[str, Any] = {"tool": tool}
+    a = args if isinstance(args, dict) else {}
+    for k in ("control_id", "host", "agent_id", "dry_run", "day",
+              "family", "profile"):
+        if k in a:
+            d[k] = a[k]
+    if isinstance(result, dict):
+        for k in ("status", "reason", "rc", "error", "scan_mode",
+                  "results_path", "ok"):
+            if k in result:
+                d[k] = result[k]
+        if isinstance(result.get("scores"), dict):
+            d["fleet_score"] = result["scores"].get("fleet_score")
+    return d
+
+
+def _scan_dir_rows() -> List[Dict[str, Any]]:
+    """Synthesize task rows for historic OpenSCAP scans on disk."""
+    import hashlib
+    base = os.environ.get(
+        "SOC_SCAN_RESULTS_DIR",
+        os.path.expanduser("~/.openclaw/soc/scans"))
+    out: List[Dict[str, Any]] = []
+    if not os.path.isdir(base):
+        return out
+    for day in sorted(os.listdir(base)):
+        daydir = os.path.join(base, day)
+        if not os.path.isdir(daydir) or not re.match(
+                r"^\d{4}-\d{2}-\d{2}$", day):
+            continue
+        for res in sorted(os.listdir(daydir)):
+            if not res.startswith("results-") or not res.endswith(".xml"):
+                continue
+            host = res[len("results-"):-len(".xml")]
+            full = os.path.join(daydir, res)
+            try:
+                mtime = os.stat(full).st_mtime
+            except OSError:
+                continue
+            ts = __import__("datetime").datetime.fromtimestamp(
+                mtime, __import__("datetime").timezone.utc).isoformat()
+            report = os.path.join(daydir, f"report-{host}.html")
+            out.append({
+                "id": hashlib.sha1(
+                    f"{ts}|stig_scan|{host}".encode()).hexdigest()[:12],
+                "ts": ts, "kind": "stig_scan", "target": host,
+                "status": "done", "ended": ts,
+                "details": {
+                    "results_path": full,
+                    "report_url": f"/scans/{day}/report-{host}.html"
+                    if os.path.exists(report) else None,
+                },
+            })
+    return out
+
+
+def tool_tasks_list(args: Dict[str, Any]) -> Dict[str, Any]:
+    """tasks_list(limit=100) -> vCenter-style task history: every
+    recorded SOC task (compliance scans, agent-restart triggers)
+    newest-first, merged with historic OpenSCAP scans on disk."""
+    limit = min(int(args.get("limit") or 100), 500)
+    rows = list(_tasklog().load_tasks(limit * 2)) + _scan_dir_rows()
+    rows.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    # a "running" row older than 2h is almost certainly a dead process
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    out = []
+    for r in rows[:limit]:
+        if r.get("status") == "running":
+            try:
+                started = _dt.datetime.fromisoformat(
+                    (r.get("ts") or "").replace("Z", "+00:00"))
+                if now - started > _dt.timedelta(hours=2):
+                    r = dict(r, status="timeout")
+            except Exception:
+                pass
+        out.append(r)
+    return {"ok": True, "tool": "tasks_list", "tasks": out,
+            "total": len(rows)}
+
+
+def tool_task_get(args: Dict[str, Any]) -> Dict[str, Any]:
+    """task_get(id) -> one task row + its history (drill-down)."""
+    tid = str(args.get("id") or "").strip()
+    if not tid:
+        raise ValueError("id is required")
+    row = _tasklog().get_task(tid)
+    if row is None:
+        for r in _scan_dir_rows():
+            if r.get("id") == tid:
+                row = dict(r, history=[r])
+                break
+    if row is None:
+        return {"ok": False, "tool": "task_get",
+                "error": f"unknown task id {tid!r}"}
+    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+    rp = details.get("report_path") or details.get("results_path")
+    return {"ok": True, "tool": "task_get",
+            "task": dict(row, report_available=bool(rp and os.path.exists(rp)))}
 
 
 def tool_fleet_status(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -804,7 +1303,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/tenants.json":
             tenants = _load_routing_tenants() or {}
-            self._json(200, {"ok": True, "tenants": tenants})
+            self._json(200, _redact_ips({"ok": True, "tenants": tenants}))
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
         # Static files
@@ -823,7 +1322,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         # SPA-style routes: serve index.html so the client
         # can render the page.
-        if re.match(r"^/(tenants|agents|runs)/[A-Za-z0-9_.-]+/?$", path):
+        if re.match(r"^/(tenants|agents|runs|fleet)/[A-Za-z0-9_.-]+/?$", path):
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
@@ -851,6 +1350,66 @@ class _Handler(BaseHTTPRequestHandler):
         if re.match(r"^/stig/host/[A-Za-z0-9_.-]+/?$", path):
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        # /packages search + /packages/<name> detail + host diff
+        if path == "/packages" or path == "/packages/":
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/packages/[A-Za-z0-9+._%()-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/packages-diff/[A-Za-z0-9+._%()-]+/[A-Za-z0-9+._%()-]+/?$",
+                    path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        # /cve fleet rollup + /cve/<agent> per-host CVE review
+        if path == "/cve" or path == "/cve/":
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/cve/[A-Za-z0-9_.-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        # /logs/<agent> — recent Wazuh alerts for one agent (C1 proxy)
+        if re.match(r"^/logs/[A-Za-z0-9_.-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        # /tasks page (vCenter-style task history) + drill-down
+        if path == "/tasks" or path == "/tasks/":
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        if re.match(r"^/tasks/[A-Za-z0-9_-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        # OpenSCAP scan artifacts: /scans/<day>/report-<host>.html
+        m_scans = re.match(
+            r"^/scans/(\d{4}-\d{2}-\d{2})/(report-[A-Za-z0-9_.-]+\.html)$",
+            path)
+        if m_scans:
+            base = os.environ.get(
+                "SOC_SCAN_RESULTS_DIR",
+                os.path.expanduser("~/.openclaw/soc/scans"))
+            fpath = os.path.join(base, m_scans.group(1), m_scans.group(2))
+            if (os.path.isfile(fpath) and os.path.realpath(fpath).startswith(
+                    os.path.realpath(base) + os.sep)):
+                with open(fpath, "rb") as fh:
+                    body = fh.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                self._log("GET", 200, (time.monotonic() - t0) * 1000)
+                return
+            self._json(404, {"ok": False, "error": "not found"})
+            self._log("GET", 404, (time.monotonic() - t0) * 1000)
             return
         # /tenants, /agents, /tickets SPA landing pages (drilldowns
         # at /<kind>/<id> are matched by the regex below).
@@ -898,23 +1457,92 @@ class _Handler(BaseHTTPRequestHandler):
             "stig_overview": tool_stig_overview,
             "stig_findings": tool_stig_findings,
             "stig_host_view": tool_stig_host_view,
+            "host_control_status": tool_host_control_status,
             "fleet_host_view": tool_fleet_host_view,
+            "agent_logs": tool_agent_logs,
+            "vulnerability_findings": tool_vulnerability_findings,
+            "fleet_cve_overview": tool_fleet_cve_overview,
+            "packages_search": tool_packages_search,
+            "package_diff": tool_package_diff,
             "run_scan": tool_run_scan_proxy,
-        }[tool]
+            "run_host_compliance_scan": tool_run_host_compliance_scan,
+            "remediate_control": tool_remediate_control,
+            "tasks_list": tool_tasks_list,
+            "task_get": tool_task_get,
+            "compliance_report": tool_compliance_report,
+            "stig_report": tool_stig_report,
+            "run_fleet_scan": tool_run_fleet_scan,
+        }.get(tool)
+        if impl is None:
+            # Allowed in DASHBOARD_TOOLS but not dispatchable — fail clean
+            # instead of KeyError-aborting the connection.
+            self._json(404, {"ok": False, "error": f"unknown tool: {tool}"})
+            self._log("POST", 404, (time.monotonic() - t0) * 1000)
+            return
+        started_ts = __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).isoformat()
+        logged_kind = _TASK_LOGGED_TOOLS.get(tool)
+        if logged_kind:
+            try:
+                _tasklog().record_task(
+                    logged_kind,
+                    str((args or {}).get("agent_id")
+                        or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
+                    "running", started_ts,
+                    details=_task_details(tool, args))
+            except Exception:
+                pass
         try:
             result = impl(args)
         except ValueError as e:
+            try:
+                if logged_kind:
+                    _tasklog().record_task(
+                        logged_kind,
+                        str((args or {}).get("agent_id")
+                            or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
+                        "failed", started_ts,
+                        ended=__import__("datetime").datetime.now(
+                            __import__("datetime").timezone.utc).isoformat(),
+                        details={**_task_details(tool, args), "error": str(e)})
+            except Exception:
+                pass
             self._json(400, {"ok": False, "error": str(e), "tool": tool})
             self._log("POST", 400, (time.monotonic() - t0) * 1000)
             return
         except Exception as e:
             sys.stderr.write(
                 f"[soc-dashboard] unhandled: {e!r}\n{traceback.format_exc()}\n")
+            try:
+                if logged_kind:
+                    _tasklog().record_task(
+                        logged_kind,
+                        str((args or {}).get("agent_id")
+                            or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
+                        "failed", started_ts,
+                        ended=__import__("datetime").datetime.now(
+                            __import__("datetime").timezone.utc).isoformat(),
+                        details={**_task_details(tool, args), "error": repr(e)[:300]})
+            except Exception:
+                pass
             self._json(500, {"ok": False, "error": f"internal: {e!r}",
                              "tool": tool})
             self._log("POST", 500, (time.monotonic() - t0) * 1000)
             return
-        self._json(200, result)
+        if logged_kind and isinstance(result, dict):
+            try:
+                _tasklog().record_task(
+                    logged_kind,
+                    str((args or {}).get("agent_id")
+                        or (args or {}).get("host") or (args or {}).get("control_id") or "-"),
+                    "done" if result.get("ok") else "failed",
+                    started_ts,
+                    ended=__import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc).isoformat(),
+                    details=_task_details(tool, args, result))
+            except Exception:
+                pass
+        self._json(200, _redact_ips(result))
         self._log("POST", 200, (time.monotonic() - t0) * 1000)
 
     def do_PUT(self) -> None:  # noqa: N802

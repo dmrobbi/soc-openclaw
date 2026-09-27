@@ -49,6 +49,12 @@ User=__SOC_USER__
 Group=__SOC_USER__
 WorkingDirectory=/opt/soc-openclaw
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# 2026-09-14: pin the CANONICAL log paths — without these the report
+# read the legacy 5-row audit file and a stale 0-byte realtime file,
+# so every daily report was nearly empty. Env names match the
+# soc_evidence.py contract.
+Environment="SOC_AUDIT_LOG=/home/__SOC_USER__/.openclaw-wazuh/audit_log.jsonl"
+Environment="SOC_REALTIME_LOG=/home/__SOC_USER__/.openclaw/soc/data/realtime_soc.jsonl"
 ExecStart=/home/__SOC_USER__/.openclaw/agents/soc-daily-decisions/pre-start.sh
 StandardOutput=journal
 StandardError=journal

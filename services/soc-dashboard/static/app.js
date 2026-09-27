@@ -76,6 +76,19 @@
     let data;
     try { data = await api("/tools/fleet_status", "POST", {}); }
     catch (e) { return errorView(e); }
+    // STIG findings per host (single C4 call; feeds the STIG column).
+    // Non-fatal: the fleet page renders without counts if C4 hiccups.
+    let stigByHost = {};
+    try {
+      const sq = await api("/tools/query_stig_findings", "POST",
+                           { time_range: "30d", limit: 1 });
+      stigByHost = (sq && sq.by_host) || {};
+    } catch (e) { /* ignore */ }
+    let cveByHost = {};
+    try {
+      const cv = await api("/tools/fleet_cve_overview", "POST", {});
+      cveByHost = (cv && cv.by_host) || {};
+    } catch (e) { /* ignore */ }
     const s = data.summary || {};
     const rows = data.agents || [];
     const nodes = [
@@ -97,7 +110,7 @@
         card("Unknown status", s.unknown_status || 0, "dim"),
       ),
       el("div", { class: "section" },
-        fleetTable(rows),
+        fleetTable(rows, stigByHost, cveByHost),
       ),
       el("p", { class: "muted" },
         "Source: C2 manager-mcp (",
@@ -109,7 +122,11 @@
     return nodes;
   }
 
-  function fleetTable(rows) {
+  function fleetTable(rows, stigByHost, cveByHost) {
+    stigByHost = stigByHost || {};
+    cveByHost = cveByHost || {};  // 2026-09-16: passed in by pageFleet —
+    // it was only a pageFleet local before, so the CVE column raised
+    // ReferenceError and the whole /fleet page rendered an empty shell.
     if (!rows.length) {
       return el("p", { class: "empty" },
         "No agents returned by C2 manager-mcp. ",
@@ -141,6 +158,9 @@
         el("th", null, "os"),
         el("th", null, "keepalive"),
         el("th", null, "staleness"),
+        el("th", null, "STIG (30d)"),
+        el("th", null, "CVEs"),
+        el("th", null, "logs"),
       )),
       el("tbody", null, ...sorted.map(r => {
         const isMgr = r.last_keepalive && r.last_keepalive.startsWith("9999");
@@ -167,11 +187,465 @@
           el("td", null, r.os || "-"),
           el("td", null, fmtTime(r.last_keepalive)),
           el("td", null, staleness),
+          el("td", null, el("a", {
+            href: "/stig/host/" + encodeURIComponent(r.name || r.id),
+            "data-link": "",
+            title: "STIG findings for " + (r.name || r.id) + " (30d)",
+          }, el("span", { class: "badge " + ((stigByHost[r.name] || 0) > 0 ? "warn" : "dim") },
+             String(stigByHost[r.name] || 0)))),
+          el("td", null, (() => {
+            const c = cveByHost[r.name];
+            if (!c) return el("span", { class: "muted" }, "-");
+            const crit = c.Critical || 0, high = c.High || 0;
+            return el("a", {
+              href: "/cve/" + encodeURIComponent(r.name || r.id),
+              "data-link": "",
+              title: "CVE findings for " + (r.name || r.id) +
+                " — " + (c.total || 0) + " total",
+            }, el("span", { class: "badge " + (crit > 0 ? "bad" : (high > 0 ? "warn" : "dim")) },
+               (crit ? crit + "C" : "") + (crit && high ? "/" : "") + (high ? high + "H" : "0")));
+          })()),
+          el("td", null, isMgr ? el("span", { class: "muted" }, "-") : el("a", {
+            href: "/logs/" + encodeURIComponent(r.name || r.id),
+            "data-link": "",
+            title: "Recent Wazuh alerts for " + (r.name || r.id),
+          }, "Logs")),
         );
       })),
     );
   }
 
+  // ---- Packages & CVEs (inventory + vulnerability join) ----
+  let packagesQ = "";
+  let diffHostA = "", diffHostB = "";
+  let packageHosts = [];
+  async function pagePackages() {
+    if (!packageHosts.length) {
+      try {
+        const fleet = await api("/tools/fleet_status", "POST", {});
+        packageHosts = (fleet.agents || []).map(a => a.name).filter(Boolean).sort();
+      } catch (e) { /* fleet names optional for this page */ }
+    }
+    let rows = null, note = "";
+    if (packagesQ) {
+      try {
+        const data = await api("/tools/packages_search", "POST",
+                               { q: packagesQ, size: 500 });
+        if (!data.ok) return errorView(new Error(data.error || "packages_search failed"));
+        rows = data.rows || [];
+        note = data.total + " installed copies matched (capped at 500 rows)";
+      } catch (e) { return errorView(e); }
+    }
+    // group rows by package when searching
+    let grouped = [];
+    if (rows) {
+      const byName = {};
+      for (const r of rows) {
+        (byName[r.package] = byName[r.package] || []).push(r);
+      }
+      grouped = Object.entries(byName)
+        .map(([nm, rs]) => ({ name: nm, hosts: rs,
+                              cve: Math.max(...rs.map(r => r.cve_count || 0)) }))
+        .sort((a, b) => b.cve - a.cve || a.name.localeCompare(b.name));
+    }
+    return [
+      el("h1", null, "Packages & CVEs"),
+      el("div", { class: "btn-row" },
+        el("input", {
+          type: "text", value: packagesQ, placeholder: "package name contains…",
+          style: "padding:7px 12px;border:1px solid var(--border);border-radius:6px;background:#1b2028;color:#e6e9ef;font:inherit;min-width:260px",
+          onkeydown: (ev) => { if (ev.key === "Enter") { packagesQ = ev.target.value.trim(); render(); } },
+        }),
+        el("button", { class: "btn", onclick: (ev) => {
+          packagesQ = ev.target.parentElement.querySelector("input").value.trim(); render();
+        } }, "Search"),
+        el("a", { class: "btn", href: "/cve", "data-link": "" }, "CVE rollup"),
+      ),
+      el("p", { class: "muted" },
+        "Searches the package inventory (",
+        el("code", null, "wazuh-states-inventory-packages-*"),
+        ") across every agent; each result is annotated with the number of CVE findings known for that package."),
+      el("div", { class: "btn-row" },
+        el("select", { onchange: (ev) => { diffHostA = ev.target.value; } },
+          el("option", { value: "" }, "diff: host A…"),
+          ...packageHosts.map(n => el("option",
+            { value: n, ...(diffHostA === n ? { selected: "selected" } : {}) }, n))),
+        el("select", { onchange: (ev) => { diffHostB = ev.target.value; } },
+          el("option", { value: "" }, "diff: host B…"),
+          ...packageHosts.map(n => el("option",
+            { value: n, ...(diffHostB === n ? { selected: "selected" } : {}) }, n))),
+        el("button", { class: "btn", onclick: () => {
+          if (diffHostA && diffHostB) {
+            history.pushState({}, "", "/packages-diff/" +
+              encodeURIComponent(diffHostA) + "/" + encodeURIComponent(diffHostB));
+            render();
+          }
+        } }, "Compare hosts"),
+      ),
+      !packagesQ ? el("p", { class: "empty" },
+        "Type a package name above — e.g. openssl, nginx, sudo — to compare versions across hosts and see its CVEs. Or pick two hosts and hit \u2018Compare hosts\u2019 for a full package diff.") : null,
+      rows && grouped.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "package"), el("th", null, "hosts"),
+          el("th", null, "max CVEs"),
+          el("th", null, "versions in fleet"))),
+        el("tbody", null, ...grouped.slice(0, 60).map(g => el("tr", null,
+          el("td", null, el("a", { href: "/packages/" + encodeURIComponent(g.name),
+                                  "data-link": "" }, g.name)),
+          el("td", null, String(g.hosts.length)),
+          el("td", null, g.cve > 0 ? badge(String(g.cve) + " warn") : el("span", { class: "muted" }, "0")),
+          el("td", null, el("code", null, [...new Set(g.hosts.map(h => h.version))].join(", ").substring(0, 90))),
+        )))) : null,
+      rows && note ? el("p", { class: "muted" }, note + " — showing first " + Math.min(rows.length, 60) + " packages") : null,
+    ];
+  }
+  async function pagePackageDetail(name) {
+    let inv, vul;
+    try {
+      [inv, vul] = await Promise.all([
+        api("/tools/packages_search", "POST", { name: name, size: 500 }),
+        api("/tools/vulnerability_findings", "POST", { package: name, size: 200 }),
+      ]);
+    } catch (e) { return errorView(e); }
+    if (!inv.ok) return errorView(new Error(inv.error || "packages_search failed"));
+    const rows = inv.rows || [];
+    const sev = (vul && vul.by_severity) || {};
+    const find = (vul && vul.findings) || [];
+    return [
+      el("h1", null, "Package: " + name),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/packages", "data-link": "" }, "\u2190 Packages"),
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+      ),
+      el("p", { class: "muted" },
+        "Installed on ", el("code", null, String(rows.length)), " host(s). ",
+        "CVE findings for this package: ",
+        ...Object.entries(sev).map(([k, v]) => el("span", { class: "badge " + (k === "Critical" ? "bad" : k === "High" ? "warn" : "dim") }, k + " " + v))),
+      el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "agent"), el("th", null, "installed version"),
+          el("th", null, "arch"), el("th", null, "CVEs for this pkg"))),
+        el("tbody", null, ...rows.map(r => el("tr", null,
+          el("td", null, el("a", { href: "/cve/" + encodeURIComponent(r.agent),
+                                  "data-link": "" }, r.agent || "-")),
+          el("td", null, el("code", null, String(r.version || "-"))),
+          el("td", null, r.architecture || "-"),
+          el("td", null, r.cve_count > 0 ? badge(String(r.cve_count) + " warn") : el("span", { class: "muted" }, "0")),
+        )))),
+      find.length ? el("h2", null, "CVEs affecting " + name) : null,
+      find.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "CVE"), el("th", null, "severity"), el("th", null, "CVSS"),
+          el("th", null, "on host"), el("th", null, "description"))),
+        el("tbody", null, ...find.map(f => el("tr", null,
+          el("td", null, el("code", null, String(f.cve || "-"))),
+          el("td", null, sevBadge(f.severity)),
+          el("td", null, f.cvss != null ? String(f.cvss) : "-"),
+          el("td", null, f.agent_name || "-"),
+          el("td", null, (f.description || "-").substring(0, 110)),
+        )))) : el("p", { class: "muted" }, "No CVE findings recorded for this package."),
+    ];
+  }
+  async function pagePackageDiff(hostA, hostB) {
+    let data;
+    try {
+      data = await api("/tools/package_diff", "POST",
+                       { agent_a: hostA, agent_b: hostB });
+    } catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "package_diff failed"));
+    const mm = data.mismatch || [];
+    return [
+      el("h1", null, "Package diff: " + hostA + " vs " + hostB),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/packages", "data-link": "" }, "\u2190 Packages"),
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+      ),
+      el("p", { class: "muted" },
+        "Host A: ", el("code", null, String((data.counts || {}).a ?? "?")),
+        " packages \u00b7 Host B: ", el("code", null, String((data.counts || {}).b ?? "?")),
+        " \u00b7 common: ", el("code", null, String((data.counts || {}).common ?? "?")),
+        " \u00b7 version mismatches: ", el("code", null, String(mm.length))),
+      el("h2", null, "Version mismatches (CVE-annotated)"),
+      mm.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "package"), el("th", null, hostA), el("th", null, hostB),
+          el("th", null, "CVEs"))),
+        el("tbody", null, ...mm.slice(0, 200).map(r => el("tr", null,
+          el("td", null, el("a", { href: "/packages/" + encodeURIComponent(r.name),
+                                  "data-link": "" }, r.name)),
+          el("td", null, el("code", null, String(r.a.version || "-"))),
+          el("td", null, el("code", null, String(r.b.version || "-"))),
+          el("td", null, r.cve_count > 0 ? badge(String(r.cve_count) + " warn") : el("span", { class: "muted" }, "0")),
+        )))) : el("p", { class: "empty" }, "No version mismatches."),
+      el("h2", null, "Only on " + hostA + " (" + (data.only_a || []).length + ")"),
+      el("p", null, (data.only_a || []).slice(0, 200).map(r => r.name).join(" \u00b7 ") || "—"),
+      el("h2", null, "Only on " + hostB + " (" + (data.only_b || []).length + ")"),
+      el("p", null, (data.only_b || []).slice(0, 200).map(r => r.name).join(" \u00b7 ") || "—"),
+    ];
+  }
+  async function pagePackagesWithDiff() {
+    // fleet-wide host list for the diff selector
+    let fleet;
+    try { fleet = await api("/tools/fleet_status", "POST", {}); }
+    catch (e) { return errorView(e); }
+    const names = (fleet.agents || []).map(a => a.name).filter(Boolean).sort();
+    const base = await pagePackages();
+    const selA = el("select", { onchange: (ev) => { diffHostA = ev.target.value; } },
+      el("option", { value: "" }, "host A…"),
+      ...names.map(n => el("option", { value: n }, n)));
+    const selB = el("select", { onchange: (ev) => { diffHostB = ev.target.value; } },
+      el("option", { value: "" }, "host B…"),
+      ...names.map(n => el("option", { value: n }, n)));
+    return [base[0],
+      el("div", { class: "btn-row" },
+        selA, selB,
+        el("a", { class: "btn", href: () => "/packages-diff/" + diffHostA + "/" + diffHostB,
+                  onclick: (ev) => { ev.preventDefault();
+                    if (diffHostA && diffHostB) location.hash = ""; else ev.stopPropagation(); } }, "Diff"),
+      ),
+      ...base.slice(1)];
+  }
+
+  // ---- CVE review (Vulnerability Detector state index) ----
+  function sevBadge(sev) {
+    const cls = sev === "Critical" ? "bad" : sev === "High" ? "warn" :
+      sev === "Low" ? "dim" : "";
+    return badge(String(sev || "-") + " " + cls);
+  }
+  async function pageCveFleet() {
+    let data;
+    try { data = await api("/tools/fleet_cve_overview", "POST", {}); }
+    catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "fleet_cve_overview failed"));
+    const hosts = data.by_host || {};
+    const rows = Object.entries(hosts).sort((a, b) =>
+      (b[1].Critical || 0) - (a[1].Critical || 0) || (b[1].total || 0) - (a[1].total || 0));
+    return [
+      el("h1", null, "CVE findings \u2014 fleet rollup"),
+      el("p", { class: "muted" },
+        "Vulnerability Detector state (",
+        el("code", null, "wazuh-states-vulnerabilities-*"),
+        "). Click a host for its full findings."),
+      el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "agent"), el("th", null, "total"),
+          el("th", null, "critical"), el("th", null, "high"),
+          el("th", null, "medium"), el("th", null, "low"))),
+        el("tbody", null, ...rows.map(([name, s]) => el("tr", null,
+          el("td", null, el("a", { href: "/cve/" + encodeURIComponent(name),
+                                  "data-link": "" }, name)),
+          el("td", null, String(s.total || 0)),
+          el("td", null, badge(String(s.Critical || 0) + " " + ((s.Critical || 0) > 0 ? "bad" : "dim"))),
+          el("td", null, badge(String(s.High || 0) + " " + ((s.High || 0) > 0 ? "warn" : "dim"))),
+          el("td", null, String(s.Medium || 0)),
+          el("td", null, String(s.Low || 0)),
+        )))),
+      el("p", { class: "muted" },
+        "Fleet totals: " + Object.entries(data.totals || {})
+          .map(([k, v]) => k + " " + v).join(" \u00b7 ")),
+      el("p", null, el("a", { href: "/fleet", "data-link": "" }, "\u2190 Fleet")),
+    ];
+  }
+  async function pageCveHost(name) {
+    let data;
+    try {
+      data = await api("/tools/vulnerability_findings", "POST",
+                       { agent: name, size: 300 });
+    } catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "vulnerability_findings failed"));
+    const s = data.by_severity || {};
+    const find = data.findings || [];
+    const total = (data.by_host && data.by_host[name] &&
+                   data.by_host[name].total) ||
+                  Object.values(s).reduce((a, b) => a + b, 0);
+    const cards = el("div", { class: "cards" },
+      card("Total", total, ""),
+      card("Critical", s.Critical || 0, (s.Critical || 0) > 0 ? "bad" : "good"),
+      card("High", s.High || 0, (s.High || 0) > 0 ? "warn" : "good"),
+      card("Medium", s.Medium || 0, ""),
+      card("Low", s.Low || 0, "dim"));
+    const pkgs = data.top_packages || {};
+    return [
+      el("h1", null, "CVE findings: " + name),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/cve", "data-link": "" }, "\u2190 Fleet rollup"),
+        el("a", { class: "btn", href: "/fleet/" + encodeURIComponent(name), "data-link": "" }, "Host page"),
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+      ),
+      cards,
+      el("p", { class: "muted" },
+        "Most-affected packages: ",
+        ...Object.entries(data.top_packages || {}).slice(0, 8).map(([k, v], i) =>
+          el("span", { class: "badge dim" }, k + " (" + v + ")")),
+      ),
+      find.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "CVE"), el("th", null, "severity"), el("th", null, "CVSS"),
+          el("th", null, "package"), el("th", null, "installed"), el("th", null, "published"),
+          el("th", null, "description"))),
+        el("tbody", null, ...find.map(f => el("tr", null,
+          el("td", null, el("code", null, String(f.cve || "-"))),
+          el("td", null, sevBadge(f.severity)),
+          el("td", null, f.cvss != null ? String(f.cvss) : "-"),
+          el("td", null, f.package || "-"),
+          el("td", null, el("code", null, String(f.version || "-"))),
+          el("td", null, (f.published || "").substring(0, 10) || "-"),
+          el("td", null, (f.description || "-").substring(0, 110)),
+        )))) : el("p", { class: "empty" }, "No findings for this host."),
+    ];
+  }
+
+  // Wazuh dashboard deep link: discover filtered to one agent.
+  // The dashboard container publishes https on :5601 (LAN).
+  const WZ_DASH = "https://192.168.1.106:5601";
+  function wzDiscoverUrl(agent) {
+    const state = "(filters:!((query:(match:(('agent.name.keyword':'" +
+      agent + "'))))))";
+    return WZ_DASH + "/app/discover#/?_a=" + encodeURIComponent(state);
+  }
+  let agentLogsHours = 24;
+  async function pageAgentLogs(name) {
+    let data;
+    try {
+      data = await api("/tools/agent_logs", "POST",
+                       { agent: name, hours: agentLogsHours, size: 200 });
+    } catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "agent_logs failed"));
+    const hits = data.hits || [];
+    const sel = el("select", {
+      onchange: (ev) => { agentLogsHours = Number(ev.target.value); render(); },
+    }, ...[["6", "Last 6 hours"], ["24", "Last 24 hours"],
+           ["72", "Last 3 days"], ["168", "Last 7 days"]].map(([v, label]) =>
+      el("option", { value: v,
+                     ...(String(agentLogsHours) === v ? { selected: "selected" } : {}) },
+         label)));
+    const lvBadge = (lv) => badge(String(lv ?? "?") + " " +
+      ((lv ?? 0) >= 10 ? "bad" : (lv ?? 0) >= 7 ? "warn" : "dim"));
+    return [
+      el("h1", null, "Logs: " + name),
+      el("div", { class: "btn-row" },
+        sel,
+        el("button", { class: "btn", onclick: () => render() }, "Refresh"),
+        el("a", { class: "btn", target: "_blank", rel: "noopener",
+                  href: wzDiscoverUrl(name) }, "Open in Wazuh \u2197"),
+        el("a", { class: "btn", href: "/fleet", "data-link": "" }, "\u2190 Fleet"),
+      ),
+      el("p", { class: "muted" },
+        el("code", null, String(hits.length)),
+        " alert(s) in the selected window, newest first. Source: C1 ",
+        el("code", null, "search_alerts"), " (wazuh-alerts-*)."),
+      hits.length ? el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "time"), el("th", null, "level"), el("th", null, "rule"),
+          el("th", null, "description"), el("th", null, "src ip"),
+          el("th", null, "dst user"))),
+        el("tbody", null, ...hits.map(h => el("tr", null,
+          el("td", null, fmtTime(h.timestamp)),
+          el("td", null, lvBadge(h.level)),
+          el("td", null, el("code", null, String(h.rule_id || "-"))),
+          el("td", null, h.rule_desc || "-"),
+          el("td", null, el("code", null, h.srcip || "-")),
+          el("td", null, el("code", null, h.dstuser || "-")),
+        )))) : el("p", { class: "empty" }, "No alerts in this window."),
+    ];
+  }
+
+  // OpenSCAP control attribution + Remediate buttons (fleet host page).
+  // Failing (host, control) pairs from the latest archived scan day;
+  // applies go through the mutation-gated remediate_control tool.
+  function hostControlsSection(host, controls, mutationsEnabled) {
+    const head = el("div", { class: "section" },
+      el("h2", null, "OpenSCAP controls" +
+        (controls && controls.day ? " (scan " + controls.day + ")" : "")));
+    if (!controls || controls.error) {
+      head.appendChild(el("p", { class: "muted" },
+        "No OpenSCAP control attribution for this host yet — the latest " +
+        "scan day has no archived results for it." +
+        (controls && controls.error ? " (" + controls.error + ")" : "")));
+      return head;
+    }
+    const failed = controls.failed_meta || [];
+    if (!failed.length) {
+      head.appendChild(el("p", { class: "muted" },
+        "No failing controls attributed on " + controls.day + " \u2713"));
+      return head;
+    }
+    head.appendChild(el("p", { class: "muted" },
+      String(failed.length) + " failing of " +
+      String(controls.total || "?") + " applicable \u00b7 tenant " +
+      String(controls.tenant || "?") +
+      " \u00b7 Remediate applies the catalogue fix via SSH as remote root, " +
+      "then re-collects evidence and recomputes the score."));
+    if (!mutationsEnabled) {
+      head.appendChild(el("p", { class: "alert warn" },
+        "Manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 " +
+        "not set on soc-manager-mcp) — Remediate is disabled; Dry run " +
+        "still works (read-only)."));
+    }
+    head.appendChild(el("table", null,
+      el("thead", null, el("tr", null,
+        el("th", null, "control"), el("th", null, "title"),
+        el("th", null, "severity"), el("th", null, "action"))),
+      el("tbody", null, ...failed.map(m => {
+        const ctl = m.control_id;
+        const canAuto = !!m.automated;
+        const run = (mode) => async (ev) => {
+          ev.preventDefault();
+          const btn = ev.target;
+          const what = mode === "dry" ? "Dry-run " : "Remediate ";
+          if (!confirm(what + ctl + " on " + host + "?\n" +
+              (mode === "dry"
+                ? "Read-only: validates the tenant gate and that the fix would run."
+                : "Applies the catalogue shell fix via SSH as remote root, then re-collects evidence and recomputes the score.")))
+            return;
+          btn.disabled = true;
+          btn.textContent = mode === "dry" ? "checking…" : "applying…";
+          try {
+            const r = await api("/tools/remediate_control", "POST",
+              { control_id: ctl, tenant_id: controls.tenant,
+                host: host, confidence: 0.95,
+                dry_run: mode === "dry" });
+            const rem = (r && r.remediation) || {};
+            const st = rem.status || (r && r.ok === false ? "error" : "?");
+            if (st === "applied") {
+              btn.textContent = "applied \u2713";
+            } else if (st === "dry_run") {
+              btn.textContent = "dry-run OK \u2713 (gates pass)";
+            } else if (st === "refused") {
+              btn.textContent = "refused: " + String(rem.reason || "?").substring(0, 60);
+            } else if (st === "manual_review") {
+              btn.textContent = "manual review: " + String(rem.reason || "not executable").substring(0, 50);
+            } else {
+              btn.textContent = "failed: " +
+                String((r && r.error) || rem.error || st).substring(0, 60);
+            }
+          } catch (e) {
+            btn.textContent = "failed: " + (e.message || e);
+          }
+          setTimeout(() => {
+            btn.disabled = (mode !== "dry") && (!mutationsEnabled || !canAuto);
+            btn.textContent = mode === "dry" ? "Dry run" : "Remediate";
+          }, 8000);
+        };
+        return el("tr", null,
+          el("td", null, el("code", null, ctl)),
+          el("td", { class: "muted" },
+            (m.title || "").substring(0, 70) || "-"),
+          el("td", null, badge(m.severity || "?")),
+          el("td", null, el("span", { class: "btn-row" },
+            el("button", { class: "btn", onclick: run("dry") }, "Dry run"),
+            el("button", { class: "btn",
+                           disabled: !mutationsEnabled || !canAuto,
+                           title: canAuto ? "Apply the catalogue fix now"
+                             : "Not automatable — manual_review only",
+                           onclick: run("apply") }, "Remediate"),
+            canAuto ? null : el("span", { class: "badge dim" }, "manual"),
+          )),
+        );
+      })),
+    ));
+    return head;
+  }
   async function pageFleetHost(agentId) {
     let data;
     try { data = await api("/tools/fleet_host_view", "POST", { agent_id: agentId }); }
@@ -182,37 +656,74 @@
     const stig = data.stig || {};
     const nodes = [
       el("h1", null, "Host: " + (a.name || agentId)),
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/cve/" + encodeURIComponent(a.name || agentId),
+                  "data-link": "", title: "CVE findings for " + (a.name || agentId) }, "CVEs"),
+        el("a", { class: "btn", href: "/logs/" + encodeURIComponent(a.name || agentId),
+                  "data-link": "", title: "Recent Wazuh alerts for " + (a.name || agentId) }, "Logs"),
+        el("a", { class: "btn", target: "_blank", rel: "noopener",
+                  href: wzDiscoverUrl(a.name || agentId) }, "Open in Wazuh \u2197"),
+      ),
       el("div", { class: "cards" },
         card("Status", a.status || "?", a.status === "active" ? "good" : "bad"),
         card("IP", a.ip || "-", ""),
         card("Version", a.version || "-", ""),
         card("Group", (a.group || []).join(", ") || "-", ""),
         card("Last keepalive", fmtTime(a.last_keepalive) || "-", ""),
+        card("STIG findings (30d)", stig.total ?? 0,
+             (stig.total ?? 0) > 0 ? "warn" : "dim"),
       ),
       el("div", { class: "section" },
         el("h2", null, "Scan control"),
         el("p", { class: "muted" },
           "Runs the Wazuh agent-restart active response on this host: the agent reconnects within ~30 s and immediately starts a fresh syscheck/FIM integrity scan; the vulnerability detector re-runs."),
-        el("button", {
-          class: "btn",
-          onclick: async (ev) => {
-            ev.preventDefault();
-            if (!confirm("Trigger scan on " + (a.name || agentId) + "? (agent restart)")) return;
-            ev.target.disabled = true;
-            ev.target.textContent = "triggering…";
-            try {
-              const r = await api("/tools/run_scan", "POST", { agent_id: agentId });
-              ev.target.textContent = r.ok ? "scan triggered ✓" : "failed: " + (r.error || "?");
-            } catch (e) {
-              ev.target.textContent = "failed: " + (e.message || e);
-            }
-            setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Run scan now"; }, 8000);
-          },
-        }, "Run scan now"),
+        el("div", { class: "btn-row" },
+          el("button", {
+            class: "btn",
+            onclick: async (ev) => {
+              ev.preventDefault();
+              if (!confirm("Trigger scan on " + (a.name || agentId) + "? (agent restart)")) return;
+              ev.target.disabled = true;
+              ev.target.textContent = "triggering…";
+              try {
+                const r = await api("/tools/run_scan", "POST", { agent_id: agentId });
+                ev.target.textContent = r.ok ? "scan triggered ✓" : "failed: " + (r.error || "?");
+              } catch (e) {
+                ev.target.textContent = "failed: " + (e.message || e);
+              }
+              setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Run scan now"; }, 8000);
+            },
+          }, "Run scan now"),
+          el("button", {
+            class: "btn",
+            onclick: async (ev) => {
+              ev.preventDefault();
+              if (!confirm("Re-run compliance scan on " + (a.name || agentId) + "? (agent restart + evidence + score recompute)")) return;
+              ev.target.disabled = true;
+              ev.target.textContent = "running compliance scan…";
+              try {
+                const r = await api("/tools/run_host_compliance_scan", "POST", { agent_id: agentId });
+                if (r.ok) {
+                  const t = (r.tenants_scanned || []).join(", ") || "?";
+                  ev.target.textContent = "done ✓ (evidence: " + t + ")";
+                } else {
+                  ev.target.textContent = "failed: " + (r.error || "?");
+                }
+              } catch (e) {
+                ev.target.textContent = "failed: " + (e.message || e);
+              }
+              setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Re-run compliance scan"; }, 8000);
+            },
+          }, "Re-run compliance scan"),
+          el("a", { class: "btn", href: "/stig/host/" + encodeURIComponent(a.name || agentId),
+                   "data-link": "", title: "STIG findings for this host (30d)" },
+            "View STIG findings"),
+        ),
         data.mutations_enabled
           ? null
-          : el("p", { class: "muted" }, "Note: manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 not set) — the button will fail until enabled."),
+          : el("p", { class: "muted" }, "Note: manager mutations are DISABLED (SOC_MANAGER_MCP_ALLOW_MUTATIONS=1 not set) — the scan buttons will fail until enabled."),
       ),
+      hostControlsSection(a.name || agentId, data.controls, data.mutations_enabled),
       el("div", { class: "section" },
         el("h2", null, "Recent alerts" + (alerts.length ? " (" + alerts.length + ")" : " (none)")),
         alerts.length
@@ -231,12 +742,24 @@
           : el("p", { class: "empty" }, "No alerts recorded for this host yet."),
       ),
       el("div", { class: "section" },
-        el("h2", null, "STIG findings"),
+        el("h2", null, "STIG findings (last 30d)"),
         stig.ok
-          ? el("p", { class: "muted" },
-              (stig.total ?? 0) + " findings · " +
-              (stig.unique_controls ?? 0) + " controls · " +
-              "see " + el("a", { href: "/stig/host/" + encodeURIComponent(a.name || agentId), "data-link": "" }, "STIG host view"))
+          ? el("div", null,
+              el("p", null,
+                el("strong", null, String(stig.total ?? 0) + " findings"),
+                " across " + (stig.unique_controls ?? 0) + " controls" +
+                (() => { const bs = Object.entries(stig.by_severity || {})
+                    .filter(([, n]) => n > 0)
+                    .map(([k, n]) => n + " " + k);
+                  return bs.length ? " — " + bs.join(", ") : ""; })()),
+              stig.total > 0
+                ? el("a", { class: "btn", href: "/stig/host/" + encodeURIComponent(a.name || agentId),
+                           "data-link": "" }, "View STIG findings →")
+                : el("p", { class: "muted" },
+                    "No STIG-relevant alerts matched the catalogue rules for this host in the window. ",
+                    "Findings appear when a L12+ alert maps to a ",
+                    el("code", null, "config/stig-rules/"), " entry."),
+            )
           : el("p", { class: "empty" }, "No STIG data for this host."),
       ),
       el("p", { class: "muted" },
@@ -722,7 +1245,7 @@
   async function pageStig() {
     let data;
     try { data = await api("/tools/stig_findings", "POST",
-                           { time_range: "7d", limit: 200 }); }
+                           { time_range: "30d", limit: 200 }); }
     catch (e) { return errorView(e); }
     if (!data || !data.ok) {
       return [el("h1", null, "STIG findings"),
@@ -1060,6 +1583,123 @@
             el("div", { class: "alert bad" }, esc(String(e.message || e)))];
   }
 
+  // ---- task pane (vCenter-style) --------------------------------------
+  function taskStatusCell(r) {
+    const cls = r.status === "running" ? "warn" : r.status === "done"
+      ? "good" : r.status === "timeout" ? "warn" : "bad";
+    return el("span", { class: "badge " + cls }, r.status || "?");
+  }
+  function tasksTable(rows) {
+    if (!rows.length) return el("p", { class: "empty" },
+      "No tasks recorded yet — run a scan from a host page and it appears here.");
+    return el("table", null,
+      el("thead", null, el("tr", null,
+        el("th", null, "task"), el("th", null, "target"),
+        el("th", null, "status"), el("th", null, "started"),
+        el("th", null, "ended"), el("th", null, "report"),
+        el("th", null, ""))),
+      el("tbody", null, ...rows.map(r => {
+        const d = r.details || {};
+        return el("tr", null,
+          el("td", null, badge((r.kind || "?") === "compliance_scan"
+            ? "medium" : (r.kind || "?") === "stig_scan" ? "info" : "dim"),
+            " ", el("code", null, r.kind || "?")),
+          el("td", null, el("code", null, r.target || "-")),
+          el("td", null, taskStatusCell(r)),
+          el("td", null, el("code", null, (r.ts || "").substring(0, 19).replace("T", " "))),
+          el("td", null, el("code", null, (r.ended || "").substring(0, 19).replace("T", " ") || "-")),
+          el("td", null, d.report_url
+            ? el("a", { href: d.report_url, target: "_blank" }, "report")
+            : el("span", { class: "muted" }, "—")),
+          el("td", null, el("a", { href: "/tasks/" + encodeURIComponent(r.id),
+            "data-link": "" }, "details")));
+      })),
+    );
+  }
+  async function pageTasks() {
+    let data;
+    try { data = await api("/tools/tasks_list", "POST", { limit: 200 }); }
+    catch (e) { return errorView(e); }
+    const rows = data.tasks || [];
+    const running = rows.filter(r => r.status === "running").length;
+    return [
+      el("h1", null, "Tasks"),
+      el("p", { class: "muted" },
+        "Every task the SOC system has run: compliance scans, agent-restart " +
+        "triggers, OpenSCAP scans. Newest first — click a task for the " +
+        "drill-down (steps, evidence, report)." +
+        (running ? " " + running + " running." : "")),
+      el("div", { class: "section" }, tasksTable(rows)),
+      el("p", { class: "muted" }, "Auto-refreshes every 30s."),
+    ];
+  }
+  async function pageTaskDetail(id) {
+    let data;
+    try { data = await api("/tools/task_get", "POST", { id }); }
+    catch (e) { return errorView(e); }
+    if (!data.ok) return errorView(new Error(data.error || "task_get failed"));
+    const t = data.task || {};
+    const d = (t.details && typeof t.details === "object") ? t.details : {};
+    return [
+      el("h1", null, "Task: " + (t.kind || "?") + " · " + (t.target || "?")),
+      el("div", { class: "cards" },
+        card("Status", t.status || "?",
+             t.status === "done" ? "good" : (t.status === "running" ? "warn" : "bad")),
+        card("Started", fmtTime(t.ts) || "-", ""),
+        card("Ended", fmtTime(t.ended) || "-", ""),
+        t.report_available ? card("Report", "available", "info") : null,
+      ),
+      el("div", { class: "section" },
+        el("h2", null, "Details"),
+        el("pre", null, esc(JSON.stringify(d, null, 2))),
+      ),
+      t.history && t.history.length > 1
+        ? el("div", { class: "section" },
+            el("h2", null, "History"),
+            el("ul", { class: "list" }, ...t.history.map(h => el("li", null,
+              el("code", null, (h.ts || "").substring(0, 19)), " — ",
+              badge(h.status || "?")))))
+        : null,
+      el("div", { class: "btn-row" },
+        el("a", { class: "btn", href: "/tasks", "data-link": "" }, "← all tasks"),
+        t.report_available
+          ? el("a", { class: "btn", href: d.report_url || "/tasks", target: "_blank" },
+              "Open scan report")
+          : null,
+      ),
+    ];
+  }
+  async function updateTaskbar() {
+    const bar = document.getElementById("taskbar");
+    if (!bar) return;
+    try {
+      const data = await api("/tools/tasks_list", "POST", { limit: 30 });
+      const rows = (data.tasks || []).slice(0, 4);
+      bar.textContent = "";
+      const mk = (t) => {
+        const a = document.createElement("a");
+        a.href = "/tasks/" + encodeURIComponent(t.id);
+        a.setAttribute("data-link", "");
+        a.className = "tb-item " + (t.status === "running" ? "run"
+          : t.status === "done" ? "ok" : "fail");
+        a.textContent = (t.status === "running" ? "🔴 "
+          : t.status === "done" ? "✓ " : "✗ ")
+          + (t.kind || "task") + ": " + (t.target || "");
+        return a;
+      };
+      const running = rows.find(r => r.status === "running");
+      if (running) bar.appendChild(mk(running));
+      rows.filter(r => r.status !== "running").slice(0, 3)
+        .forEach(t => bar.appendChild(mk(t)));
+      const all = document.createElement("a");
+      all.href = "/tasks";
+      all.setAttribute("data-link", "");
+      all.className = "tb-all";
+      all.textContent = "all tasks →";
+      bar.appendChild(all);
+    } catch (e) { /* taskbar is best-effort */ }
+  }
+
   // ---- router ---------------------------------------------------------
   async function render() {
     const path = location.pathname.replace(/\/+$/, "") || "/";
@@ -1078,9 +1718,31 @@
       nodes = await pageScores();
     } else if (path === "/stig") {
       nodes = await pageStig();
+    } else if (path === "/tasks") {
+      nodes = await pageTasks();
+    } else if (path.startsWith("/tasks/")) {
+      const tid = decodeURIComponent(path.replace(/^\/tasks\//, "").replace(/\/+$/, ""));
+      if (tid) nodes = await pageTaskDetail(tid);
     } else if (path.startsWith("/stig/host/")) {
       const host = decodeURIComponent(path.replace(/^\/stig\/host\//, "").replace(/\/+$/, ""));
       if (host) nodes = await pageStigHost(host);
+    } else if (path.startsWith("/logs/")) {
+      const name = decodeURIComponent(path.replace(/^\/logs\//, "").replace(/\/+$/, ""));
+      if (name) nodes = await pageAgentLogs(name);
+    } else if (path === "/cve") {
+      nodes = await pageCveFleet();
+    } else if (path.startsWith("/cve/")) {
+      const name = decodeURIComponent(path.replace(/^\/cve\//, "").replace(/\/+$/, ""));
+      if (name) nodes = await pageCveHost(name);
+    } else if (path === "/packages") {
+      nodes = await pagePackages();
+    } else if (path.startsWith("/packages-diff/")) {
+      const rest = decodeURIComponent(path.replace(/^\/packages-diff\//, "").replace(/\/+$/, ""));
+      const parts = rest.split("/");
+      if (parts.length >= 2) nodes = await pagePackageDiff(parts[0], parts[1]);
+    } else if (path.startsWith("/packages/")) {
+      const name = decodeURIComponent(path.replace(/^\/packages\//, "").replace(/\/+$/, ""));
+      if (name) nodes = await pagePackageDetail(name);
     } else if (path === "/agents") {
       nodes = await pageAgents();
     } else if (path === "/tickets") {
@@ -1103,7 +1765,8 @@
                            el("p", null, el("a", { href: "/" }, "← back to overview"))];
     }
     clear(root);
-    nodes.forEach(n => root.appendChild(n));
+    nodes.forEach(n => { if (n) root.appendChild(n); });
+    updateTaskbar();
     // Highlight current nav
     document.querySelectorAll(".nav a").forEach(a => {
       const href = a.getAttribute("href");
@@ -1153,4 +1816,6 @@
   if (location.pathname.replace(/\/+$/, "") === "/fleet") scheduleFleetRefresh();
   updateStatus();
   setInterval(updateStatus, 15000);
+  updateTaskbar();
+  setInterval(updateTaskbar, 30000);
 })();

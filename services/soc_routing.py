@@ -578,9 +578,9 @@ def _smoke() -> int:
 def _smoke_inner() -> int:
     cfg = load_config()
     assert cfg.path.endswith("soc-routing.yaml"), cfg.path
-    assert set(cfg.known_tenants()) == {"example-soc", "example-soc"}, \
+    assert set(cfg.known_tenants()) == {"example-soc", "example-soc-2"}, \
         cfg.known_tenants()
-    # bedimsecurity is the prod tenant
+    # example-soc is the prod tenant
     bedim = cfg.tenant("example-soc")
     assert bedim.auto_remediation_threshold == 0.85
     assert "auto_remediate" in bedim.allowed_actions
@@ -597,20 +597,21 @@ def _smoke_inner() -> int:
     ok, why = bedim.can_auto_remediate(confidence=0.92, severity="low")
     assert not ok and "not eligible" in why, why
 
-    # stsgym is the demo — auto_remediation not in allowed_actions
-    stsgym = cfg.tenant("example-soc")
-    assert "auto_remediate" not in stsgym.allowed_actions
-    ok, why = stsgym.can_auto_remediate(confidence=0.99, severity="critical")
+    # example-soc-2 is the demo/sandbox tenant — auto_remediation
+    # not in allowed_actions
+    demo = cfg.tenant("example-soc-2")
+    assert "auto_remediate" not in demo.allowed_actions
+    ok, why = demo.can_auto_remediate(confidence=0.99, severity="critical")
     assert not ok and "not in allowed_actions" in why, why
-    assert stsgym.stig.baseline == "moderate"
+    assert demo.stig.baseline == "moderate"
 
     # recipients_for
     recs = bedim.recipients_for("page", "page")
-    assert recs == ["wlrobbi@bedimsecurity.com"], recs
+    assert recs == ["soc-operator@example.com"], recs
     recs = bedim.recipients_for("email", "email")
     assert recs and "@" in recs[0], recs
     recs = bedim.recipients_for("note_only", "log")
-    # bedimsecurity's defaults route note_only -> [log] and
+    # example-soc's defaults route note_only -> [log] and
     # the example provides a default log.audit_target. So this
     # is the audit log path.
     assert recs == ["/var/log/soc/audit.jsonl"], recs
@@ -632,8 +633,8 @@ def _smoke_inner() -> int:
     assert bedim.is_quiet_hours(quiet_night), "23:00 NY should be quiet"
     assert bedim.is_quiet_hours(quiet_morning), "06:30 NY should be quiet"
     assert not bedim.is_quiet_hours(day_time), "12:00 NY should NOT be quiet"
-    # stsgym has quiet hours disabled
-    assert not stsgym.is_quiet_hours(day_time)
+    # example-soc-2 has quiet hours disabled
+    assert not demo.is_quiet_hours(day_time)
 
     # Bad config cases
     def _expect_fail(yaml_text: str, needle: str) -> None:

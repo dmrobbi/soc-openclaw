@@ -1,0 +1,23 @@
+# systemd OnFailure hook for the SOC healthcheck — instantiated as
+# soc-healthcheck-alert@<failed-unit>.service by soc-healthcheck.service
+# (OnFailure=soc-healthcheck-alert@%n.service). No [Install] section:
+# it is only ever pulled in by OnFailure.
+
+[Unit]
+Description=SOC healthcheck failure alert (for %i)
+
+[Service]
+Type=oneshot
+User=__SOC_USER__
+Group=__SOC_USER__
+WorkingDirectory=/home/__SOC_USER__
+# 2026-09-20: same PATH/WorkingDirectory fix as soc-healthcheck.service
+# (nvm node 26 must win; openclaw CLI fails at cwd=/).
+Environment="PATH=/home/__SOC_USER__/.nvm/versions/node/v26.8.2/bin:/home/__SOC_USER__/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="OPENCLAW_BIN=/home/__SOC_USER__/.nvm/versions/node/v26.8.2/bin/openclaw"
+Environment="SOC_MAILBOX_ENV=/home/__SOC_USER__/.openclaw/workspace/secrets/reports-bedimsecurity-mailbox.env"
+ExecStart=/opt/soc-openclaw/deploy/notify-healthcheck-failure.sh "%i"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=soc-healthcheck-alert
+TimeoutStartSec=120
