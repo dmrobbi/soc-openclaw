@@ -1,0 +1,14 @@
+{
+  "ts": "2026-09-27T14:24:36.269545+00:00",
+  "shadow_rows": 443,
+  "ingest_rows": 7827,
+  "joined": 443,
+  "questions": {
+    "escalate_vs_ingest": {
+      "agreement": 0.946,
+      "n": 443
+    }
+  },
+  "latency_ms_mean": 1125.6,
+  "generated_at": "2026-09-27T14:24:36.269545+00:00"
+}
