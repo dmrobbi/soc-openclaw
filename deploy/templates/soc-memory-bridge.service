@@ -1,0 +1,14 @@
+[Unit]
+Description=soc-memory-bridge: docker-bridge-only forwarder to host-loopback soc-memory-mcp
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/operator/laya-control/scripts/soc_mcp_bridge.py
+Environment=SOC_MCP_BRIDGE_PORT=8770
+Environment=SOC_MCP_BRIDGE_TARGET=127.0.0.1:8770
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

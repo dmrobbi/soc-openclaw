@@ -1,0 +1,12 @@
+[Unit]
+Description=laya-bridge: docker-bridge-only forwarder to host-loopback laya-serve
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/operator/laya-control/scripts/laya_bridge.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
