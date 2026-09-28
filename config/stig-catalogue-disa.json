@@ -23,7 +23,7 @@
     "e1a_backfill": {
       "already_enriched": 0,
       "applied_at": "2026-08-13T20:19:46.840128+00:00",
-      "backup_path": "/home/wez/repos/example-work/config/stig-catalogue-disa.pre-e1a-backfill.20260813T201946Z.json",
+      "backup_path": "/home/operator/repos/example-work/config/stig-catalogue-disa.pre-e1a-backfill.20260813T201946Z.json",
       "cci_mapping": "config/stig-rules/cci-to-nist-800-53.json",
       "changed": 574,
       "skipped": 59

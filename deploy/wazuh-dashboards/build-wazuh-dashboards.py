@@ -228,7 +228,7 @@ def f_alerts(name):
 
 def _es_req(method, path):
     import sys as _sys
-    _sys.path.insert(0, "/home/wez/.openclaw/soc")
+    _sys.path.insert(0, "/home/operator/.openclaw/soc")
     import indexer as _idx
     return _idx.req(method, path)
 
@@ -672,7 +672,7 @@ def to_ndjson(objs):
 def import_objects(objs):
     import base64
     env = {}
-    for line in open("/home/wez/.openclaw/soc/secrets/wazuh-indexer.env"):
+    for line in open("/home/operator/.openclaw/soc/secrets/wazuh-indexer.env"):
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")

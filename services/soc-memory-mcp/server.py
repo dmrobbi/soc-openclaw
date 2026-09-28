@@ -14,7 +14,7 @@ Exposes two read/write tools to SOC agents over JSON-over-HTTP on
 
 Backed by a per-tenant append-only JSONL at:
 
-  $SOC_MEMORY_FILE  (default /home/wez/.openclaw/agents/soc-triage/memory/memory.jsonl)
+  $SOC_MEMORY_FILE  (default /home/operator/.openclaw/agents/soc-triage/memory/memory.jsonl)
 
 At startup the server loads the most recent N records per tenant
 into an in-memory index (default N=1000). memory_add writes through
@@ -61,7 +61,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_BIND_PORT = 8770
-DEFAULT_MEMORY_FILE = Path("/home/wez/.openclaw/agents/soc-triage/memory/memory.jsonl")
+DEFAULT_MEMORY_FILE = Path("/home/operator/.openclaw/agents/soc-triage/memory/memory.jsonl")
 DEFAULT_MAX_RECORDS = 1000            # in-memory cap (per tenant)
 DEFAULT_TOP_K = 5
 TOOLS = ("memory_search", "memory_add")
@@ -543,12 +543,12 @@ def _smoke() -> int:
 
         # Add three records
         for i, (rule_id, agent, srcip, summary) in enumerate([
-            (40112, "darth", "10.9.8.7",
+            (40112, "agent-one", "10.9.8.7",
              "Brute-force-then-success: multiple auth failures then root login from 10.9.8.7. "
              "Recommend page + block 10.9.8.7."),
             (5763, "mail.example.com", "9.9.9.1",
              "SSH brute force noise pattern; mailcow cycling."),
-            (5503, "darth", None,
+            (5503, "agent-one", None,
              "Login session opened; informational."),
         ]):
             r = _post("/tools/memory_add", {
@@ -565,9 +565,9 @@ def _smoke() -> int:
         r = _post("/tools/memory_add", {
             "incident_id": "inc-0000",
             "rule_id": 40112,
-            "agent": "darth",
+            "agent": "agent-one",
             "srcip": "10.9.8.7",
-            "summary": "UPDATED: darth 40112 brute-force; root login from 10.9.8.7.",
+            "summary": "UPDATED: agent-one 40112 brute-force; root login from 10.9.8.7.",
         })
         assert r["ok"] is True and r["was_new"] is False, (
             f"idempotency broken: {r}")
@@ -591,7 +591,7 @@ def _smoke() -> int:
             "alert": {
                 "rule": {"id": 40112, "level": 12,
                          "description": "Multiple authentication failures followed by a success."},
-                "agent": {"name": "darth", "ip": "<agent-ip>"},
+                "agent": {"name": "agent-one", "ip": "<agent-ip>"},
                 "data": {"srcip": "10.9.8.7", "user": "root"},
             },
             "top_k": 5,

@@ -17,7 +17,7 @@ ignored (they carry no grade signal).
 
 CLI:
     python3 soc_scan_diff.py --day-a 2026-09-13 --day-b 2026-09-16 \
-        [--scans-dir ~/.openclaw/soc/scans] [--host thing1] \
+        [--scans-dir ~/.openclaw/soc/scans] [--host edge host] \
         [--out /tmp/diff.md]
 
 Output: markdown report (stdout or --out). Importable:

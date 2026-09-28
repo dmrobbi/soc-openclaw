@@ -26,7 +26,7 @@ I produce **proposals** for:
 
   1. New MEMORY.md entries per agent (`soc-narrator/`,
      `soc-triage/`, `soc-replier/`, etc.) — facts the agent
-     should remember (e.g. "darth has been offline since
+     should remember (e.g. "agent-one has been offline since
      2026-08-03", "rule 5763 on mail.example.com is the
      top-noisy pattern").
   2. New playbook entries in
@@ -68,7 +68,7 @@ I always return ONE JSON object, no surrounding prose:
   "duplicate_incidents": [
     {
       "rule_id": 40112,
-      "host": "darth",
+      "host": "agent-one",
       "count": 4,
       "window": "2026-08-08T11:59 → 2026-08-08T14:00",
       "rationale": "same root cause — backdoor attempt from 10.9.8.7"
@@ -80,8 +80,8 @@ I always return ONE JSON object, no surrounding prose:
 Rules:
 
 - `memory_proposals[].entry` must be a fact, not a
-  recommendation ("darth was offline 2026-08-03 15:02 UTC" not
-  "consider checking darth's status").
+  recommendation ("agent-one was offline 2026-08-03 15:02 UTC" not
+  "consider checking agent-one's status").
 - Every proposal must cite at least one `grounding` runId or
   ruleId so a reviewer can verify.
 - I never claim certainty I don't have. If the data

@@ -61,8 +61,8 @@ is the source of truth for personas.
 
 | Timer | When | What it does | Output lands in |
 |---|---|---|---|
-| `soc-audit-shipper.timer` | every 5 min | tails the audit JSONL, forwards new rows over SSH to trooper2 | trooper2 canonical JSONL (curator/reviewers) |
-| `soc-realtime-shipper.timer` | every 5 min | tails the realtime JSONL, same one-way mirror | trooper2 canonical JSONL |
+| `soc-audit-shipper.timer` | every 5 min | tails the audit JSONL, forwards new rows over SSH to control host | control host canonical JSONL (curator/reviewers) |
+| `soc-realtime-shipper.timer` | every 5 min | tails the realtime JSONL, same one-way mirror | control host canonical JSONL |
 | `soc-healthcheck.timer` | hourly (:00) | unit/ACL/state-drift assertions; OnFailure alerting | journal + operator ping on failure |
 | `soc-daily-decisions.timer` | 06:00 UTC | reads audit log + realtime JSONL for the day, writes the D1 decisions report | markdown report file (delivery = G8, pending) |
 | `soc-compliance-daily.timer` | 06:30 UTC | collect → merge archived scans → auto-remediate (local + fleet) → re-collect → score | evidence store, scores, journal rollup |
@@ -97,9 +97,9 @@ flowchart TD
   end
 
   subgraph SHIP["Record mirroring - every 5 min"]
-    T5A["soc-audit-shipper"] --> S1["tail audit JSONL, ssh to trooper2"]
-    T5B["soc-realtime-shipper"] --> S2["tail realtime JSONL, ssh to trooper2"]
-    S1 --> H2[("trooper2: curator + reviewers read")]
+    T5A["soc-audit-shipper"] --> S1["tail audit JSONL, ssh to control host"]
+    T5B["soc-realtime-shipper"] --> S2["tail realtime JSONL, ssh to control host"]
+    S1 --> H2[("control host: curator + reviewers read")]
     S2 --> H2
   end
 
@@ -120,7 +120,7 @@ flowchart TD
     N9 --> G5{"host in allowlist?"}:::gate
     G5 -- "no" --> N10[("skipped")]
     G5 -- "yes" --> G6{"automated + shell fix + tenant gate"}:::gate
-    G6 -- "eligible" --> N11["ssh wez@host + sudo apply + audit row"]
+    G6 -- "eligible" --> N11["ssh operator@host + sudo apply + audit row"]
     G6 -- "refused or failed" --> N12[("refused/failed row - HUMAN investigates"):::human]
     N11 --> G7{"any applied?"}:::gate
     G7 -- "yes" --> N13["re-collect: audit PASS grades win over stale scan FAIL"]

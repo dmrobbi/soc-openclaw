@@ -639,8 +639,8 @@ def _smoke() -> int:
         _alert = {
             "rule": {"id": "40112", "level": 12,
                      "description": "SSH brute force"},
-            "agent": {"id": "002", "name": "darth",
-                      "ip": "10.0.0.114"},
+            "agent": {"id": "002", "name": "agent-one",
+                      "ip": "192.0.2.114"},
             "data": {"srcip": "9.9.9.9", "dstuser": "root"},
         }
         _now_iso = "2026-08-13T03:00:00.000+00:00"

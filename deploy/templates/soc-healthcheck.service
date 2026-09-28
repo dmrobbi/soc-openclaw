@@ -5,9 +5,9 @@
 # soc-healthcheck-alert@soc-healthcheck.service (OnFailure below),
 # which notifies the operator (OpenClaw chat, SMTP fallback).
 #
-# Runs as __SOC_USER__ (wez): the sub-agent check shells out to the
+# Runs as __SOC_USER__ (operator): the sub-agent check shells out to the
 # openclaw CLI, which is NOT on root's PATH (2026-09-13 lesson), and
-# the secret files it stats are wez-owned.
+# the secret files it stats are operator-owned.
 #
 # Install: rendered from deploy/templates by deploy/install.sh; fired
 # hourly by soc-healthcheck.timer.

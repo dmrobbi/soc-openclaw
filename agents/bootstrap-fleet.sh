@@ -6,20 +6,20 @@
 # OpenClaw gateway.  Idempotent — re-running propagates persona edits.
 #
 # Env:
-#   SOC_AGENTS_DIR   workspace root (default /home/wez/soc-agents)
+#   SOC_AGENTS_DIR   workspace root (default /home/operator/soc-agents)
 #   OPENCLAW_BIN     openclaw binary (default: discovered)
 #
 # Usage: bash agents/bootstrap-fleet.sh
 set -euo pipefail
 
-SOC_AGENTS_DIR="${SOC_AGENTS_DIR:-/home/wez/soc-agents}"
+SOC_AGENTS_DIR="${SOC_AGENTS_DIR:-/home/operator/soc-agents}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -z "${OPENCLAW_BIN:-}" ]; then
   if command -v openclaw >/dev/null 2>&1; then
     OPENCLAW_BIN="$(command -v openclaw)"
-  elif [ -x /home/wez/.npm-global/bin/openclaw ]; then
-    OPENCLAW_BIN=/home/wez/.npm-global/bin/openclaw
+  elif [ -x /home/operator/.npm-global/bin/openclaw ]; then
+    OPENCLAW_BIN=/home/operator/.npm-global/bin/openclaw
   elif [ -x /usr/local/bin/openclaw ]; then
     OPENCLAW_BIN=/usr/local/bin/openclaw
   else

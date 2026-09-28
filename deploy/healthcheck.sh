@@ -5,8 +5,8 @@
 # soc-healthcheck-alert@soc-healthcheck.service (OpenClaw chat + SMTP
 # fallback). Also safe to run by hand: deploy/healthcheck.sh
 #
-# NOTE: run as wez — the sub-agent check shells out to the openclaw CLI
-# (not on root's PATH) and the secret files are wez-owned.
+# NOTE: run as operator — the sub-agent check shells out to the openclaw CLI
+# (not on root's PATH) and the secret files are operator-owned.
 DASH="${SOC_DASHBOARD_URL:-http://127.0.0.1:8771}"
 PASS=0
 FAIL=0
@@ -46,7 +46,7 @@ N=$("$OC_BIN" agents list 2>/dev/null | grep -cE "^- soc-")
 [ "$N" -ge 6 ] && ok "sub-agents registered: $N" || bad "sub-agents registered: $N (want >=6)"
 
 echo "--- secrets perms (assert, never rewrite) ---"
-# 2026-09-12 incident: reports-mailbox.env was 600 wez:wez, the wazuh
+# 2026-09-12 incident: reports-mailbox.env was 600 operator:operator, the wazuh
 # container (uid 999) could not read it, and EVERY level>=12 alert was
 # silently dropped for a day. Numeric ids only — group names collide on
 # this host (gid 1001 displays as "dnsmasq").
@@ -84,7 +84,7 @@ echo "--- soc pipeline state perms (container uid 999) ---"
 # manual `docker exec` WITHOUT `-u wazuh`) broke every LLM decision
 # turn for 3 weeks (EACCES + fallback to a token without
 # operator.write). Assert, never rewrite.
-SD=/home/wez/.openclaw-wazuh
+SD=/home/operator/.openclaw-wazuh
 N=$(sudo -n find "$SD" -user 0 -not -type l 2>/dev/null | wc -l)
 [ "$N" -eq 0 ] && ok "pipeline state: no root-owned files" || bad "pipeline state: $N root-owned files — wazuh-context agent turns fail (run docker exec -u wazuh!)"
 O=$(sudo -n stat -c '%u' "$SD/identity" 2>/dev/null)

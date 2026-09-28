@@ -11,7 +11,7 @@ One-time per host — installs the `oscap` binary (the datastream is pushed
 from the SOC host at scan time):
 
 ```bash
-ssh wez@<target> 'sudo -n bash -s' < deploy/openscap-setup.sh
+ssh operator@<target> 'sudo -n bash -s' < deploy/openscap-setup.sh
 ```
 
 ## 2. Datastream / profile matrix
@@ -45,8 +45,8 @@ the session is killed. For anything non-trivial, launch **detached on the
 target** and collect later:
 
 ```bash
-scp /usr/share/xml/scap/ssg/content/<ds>.xml wez@<target>:/tmp/
-ssh wez@<target> 'sudo -n nohup oscap xccdf eval \
+scp /usr/share/xml/scap/ssg/content/<ds>.xml operator@<target>:/tmp/
+ssh operator@<target> 'sudo -n nohup oscap xccdf eval \
   --profile <profile-id> --results /tmp/scan-results.xml \
   --report /tmp/scan-report.html /tmp/<ds>.xml > /tmp/scan.log 2>&1 &'
 # later: scp the results back into ~/.openclaw/soc/scans/<day>/ as
@@ -135,7 +135,7 @@ per-host tallies, evidence counts, and the recomputed score.
   the host. Example:
   `python3 services/soc_stig_remediate.py --tool remediate_control
   --args '{"control_id":"IA.L1-3.5.002","tenant_id":"...",
-  "confidence":0.95,"host":"evgen-b"}'` — verified live on evgen-b
+  "confidence":0.95,"host":"lab-b"}'` — verified live on lab-b
   (minlen = 14 + libpam-pwquality installed). The nightly
   auto-remediation pass stays LOCAL-only by design; fleet remediation
   is operator-triggered for now.
@@ -147,7 +147,7 @@ between collect and scoring:
 
 | Env | Gate | What it does |
 |---|---|---|
-| `SOC_AUTO_REMEDIATE=1` | operator | applies safe shell fixes for controls that are **not pass today** on the SOC host itself (thing1) |
+| `SOC_AUTO_REMEDIATE=1` | operator | applies safe shell fixes for controls that are **not pass today** on the SOC host itself (edge host) |
 | `SOC_AUTO_REMEDIATE_FLEET=1` | operator | for every **(host, control)** failing in the day's archived scans, applies the fix **on that host** via `ssh <SCAN_USER>@<ip> 'sudo -n bash -s'` |
 | `SOC_AUTO_REMEDIATE_FLEET_HOSTS=` | host allowlist | fail-closed: empty = no fleet hosts; comma-separated names to opt hosts in |
 
@@ -165,7 +165,7 @@ env row whose name matches a registry (C2/C1) row **overrides it in
 place** instead of appending a duplicate: the registry's agent id is
 kept, an empty platform/os_version field inherits the registry's value
 (so a bare `name:ip` row is a pure IP pin), and rows with no registry
-match append unchanged (the docker-hosted evgen-d/e/f case). Prefer NOT
+match append unchanged (the docker-hosted lab-d/e/f case). Prefer NOT
 pinning agent-running hosts in `SOC_FLEET_EXTRA` — the registry IP is
 live-correct (agent keepalives re-learn it on every reconnect) and
 DHCP-aware; a stale pin can silently target the wrong VM when a NAT
@@ -176,7 +176,7 @@ passwordless sudo on the target):
 
 1. **Every fleet IP must be SSH-reachable from the SOC host
    non-interactively.** Hosts on NAT-only libvirt/compose networks
-   (e.g. the evgen-a/b/c VMs on trooper2's `demo_nat` 192.168.200.0/24)
+   (e.g. the lab-a/b/c VMs on control host's `demo_nat` 192.168.200.0/24)
    are unreachable directly — wire an `ssh` ProxyCommand pattern in the
    SOC user's `~/.ssh/config` (`Host 192.168.200.*` → `ssh -W %h:%p
    <nat-host>`); ICMP to such segments never works and is not a health
@@ -211,4 +211,4 @@ dropped from evidence grading and scoring — they never pass or fail.
   (`scans/<day>/tailoring-<host>.xml`) as an exclusion audit trail.
 
 Verified end-to-end 2026-09-18: `aide_check_audit_tools` listed →
-evgen-b scan → `notselected` in results, other rules unchanged.
+lab-b scan → `notselected` in results, other rules unchanged.

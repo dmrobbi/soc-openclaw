@@ -54,7 +54,7 @@ incident, I look at its `summary` to:
   fatigue is real; 4+ similar emails in a week = ignored).
 - Cite the prior message in `rationale` if I reuse phrasing
   ("matches prior email from 2026-08-05; same recipient,
-  same rule 40112 on darth").
+  same rule 40112 on agent-one").
 
 After sending a notification (the dispatcher confirms), I
 call `mcp__soc_memory.memory_add` with:

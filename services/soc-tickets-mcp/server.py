@@ -690,10 +690,10 @@ def _smoke() -> int:
     with ur.urlopen(ur.Request(
             f"http://127.0.0.1:{port}/tools/create_ticket",
             data=json.dumps({
-                "title": "Brute-force on darth",
+                "title": "Brute-force on agent-one",
                 "body": "Rule 40112 fired; 15 attempts from 10.9.8.7",
                 "severity": "high",
-                "assignee": "wez",
+                "assignee": "operator",
                 "labels": ["bruteforce", "ssh"],
             }).encode(),
             method="POST"), timeout=2) as r:
@@ -703,7 +703,7 @@ def _smoke() -> int:
         assert tid1.startswith("TKT-"), tid1
         assert re.match(r"^TKT-\d{8}-\d{3}$", tid1), tid1
         assert body["ticket"]["status"] == "open"
-        assert body["ticket"]["assignee"] == "wez"
+        assert body["ticket"]["assignee"] == "operator"
         assert body["ticket"]["labels"] == ["bruteforce", "ssh"]
         assert body["ticket"]["comments"] == []
         assert body["ticket"]["schema"] == 1
@@ -736,7 +736,7 @@ def _smoke() -> int:
             data=json.dumps({"ticket_id": tid1}).encode(),
             method="POST"), timeout=2) as r:
         body = json.loads(r.read())
-        assert body["ticket"]["title"] == "Brute-force on darth"
+        assert body["ticket"]["title"] == "Brute-force on agent-one"
         assert body["ticket"]["severity"] == "high"
 
     # get_ticket bad id -> 400
@@ -789,10 +789,10 @@ def _smoke() -> int:
         body = json.loads(r.read())
         assert body["total"] == 0
 
-    # list_tickets assignee=wez
+    # list_tickets assignee=operator
     with ur.urlopen(ur.Request(
             f"http://127.0.0.1:{port}/tools/list_tickets",
-            data=b'{"assignee":"wez"}', method="POST"),
+            data=b'{"assignee":"operator"}', method="POST"),
             timeout=2) as r:
         body = json.loads(r.read())
         assert body["total"] == 1
@@ -842,7 +842,7 @@ def _smoke() -> int:
     # search_tickets
     with ur.urlopen(ur.Request(
             f"http://127.0.0.1:{port}/tools/search_tickets",
-            data=b'{"q":"darth"}', method="POST"),
+            data=b'{"q":"agent-one"}', method="POST"),
             timeout=2) as r:
         body = json.loads(r.read())
         assert body["total"] == 1

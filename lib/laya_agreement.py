@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nightly Laya-vs-SOC agreement analysis (Phase 1.4, thing1).
+"""Nightly Laya-vs-SOC agreement analysis (Phase 1.4, edge host).
 
 Joins /opt/soc-openclaw/data/laya-shadow.jsonl (Laya predictions) against
 ~/.openclaw/soc/data/realtime_soc.jsonl (ingest records: alert_id, level,
@@ -7,7 +7,7 @@ severity, triage LLM text) and reports per-question agreement + the
 deterministic-level baseline.
 
 Outputs: /opt/soc-openclaw/data/laya-agreement-latest.json + stdout markdown.
-Cron: 55 5 * * * (thing1, wez). Log-only; changes nothing.
+Cron: 55 5 * * * (edge host, operator). Log-only; changes nothing.
 """
 import json
 import re

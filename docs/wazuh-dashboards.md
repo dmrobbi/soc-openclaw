@@ -53,7 +53,7 @@ into `.kibana`. Idempotent. Requires the indexer creds env file
 - If the Dashboards UI shows data but saved dashboards are gone, that is
   normal for Wazuh 4.14 — only the stocked set restores them.
 - The Wazuh plugin talks to the manager API using credentials in
-  `/home/wez/wazuh-stack/config/wazuh_dashboard/wazuh.yml` (bind-mounted
+  `/home/operator/wazuh-stack/config/wazuh_dashboard/wazuh.yml` (bind-mounted
   into the dashboard container). If you rotate the manager API password,
   update that file **in place** (it is a single-file bind mount — replacing
   the file breaks the mount; see docs/security-notes.md) and restart the

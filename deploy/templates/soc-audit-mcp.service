@@ -1,7 +1,7 @@
 # systemd unit for the SOC audit-log MCP server (Track C, C4 — 2026-08-08).
 #
 # Run on the SOC host (the one with the canonical
-# ~/.openclaw/audit_log.jsonl — typically thing1 for the
+# ~/.openclaw/audit_log.jsonl — typically edge host for the
 # SIEM fleet).
 #
 # Install:
@@ -20,7 +20,7 @@
 #     Environment= block AND add a firewall rule.
 #   - Reads + the optional annotate_run append are both fine
 #     for the default ~/.openclaw/audit_log.jsonl (writable by
-#     `wez`). If you want to pin the log so no annotations can
+#     `operator`). If you want to pin the log so no annotations can
 #     be added, `chmod a-w` it before starting the unit;
 #     annotate_run will then return 403.
 

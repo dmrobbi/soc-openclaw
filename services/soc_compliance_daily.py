@@ -103,7 +103,7 @@ def _fleet_remediation_pass(tenants: List[str], day: str,
                             dry_run: bool) -> Dict[str, Any]:
     """Fleet-scale remediation (Phase 1.4, 2026-09-14): for every
     (host, control) failing in the day's scan results, apply the safe
-    shell fix ON the host via the E2 SSH path (wez + remote NOPASSWD
+    shell fix ON the host via the E2 SSH path (operator + remote NOPASSWD
     sudo — no local root). Layered gates:
       1. operator opt-in: SOC_AUTO_REMEDIATE_FLEET=1 or --remediate-fleet
       2. optional host allowlist: SOC_AUTO_REMEDIATE_FLEET_HOSTS
@@ -125,7 +125,7 @@ def _fleet_remediation_pass(tenants: List[str], day: str,
         # 2026-09-17: skip tenants whose policy does not allow
         # auto-remediation BEFORE resolving pairs — without a scan-day
         # manifest every tenant resolves to the same specs, so each
-        # tenant duplicated every (host, control) attempt (stsgym's
+        # tenant duplicated every (host, control) attempt (the fleet's
         # refusals were pure noise).
         try:
             tr = get_config().tenant(t)
@@ -234,7 +234,7 @@ def main(argv: List[str] | None = None) -> int:
                          "pass today and have a safe shell fix, apply it "
                          "(tenant-gated; requires SOC_AUTO_REMEDIATE=1 or "
                          "this flag). Fixes needing root run via "
-                         "sudo -n env (wez must have NOPASSWD sudo)")
+                         "sudo -n env (operator must have NOPASSWD sudo)")
     ap.add_argument("--remediate-fleet", action="store_true",
                     help="fleet-scale remediation pass: (host, control) "
                          "pairs failing in the day's scan results are "

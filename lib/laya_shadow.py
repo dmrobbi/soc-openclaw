@@ -215,7 +215,7 @@ def _selftest():
     print("mode:", sh.mode, "endpoint:", sh.endpoint)
     print("health:", json.dumps(sh.health()))
     alert = {"rule": {"level": 12, "id": "5763", "description": "Multiple authentication failures."},
-             "agent": {"name": "mail.stsgym.com"}, "data": {"srcip": "10.0.0.5"},
+             "agent": {"name": "mail.example.com"}, "data": {"srcip": "192.0.2.5"},
              "decoder": {"name": "sshd"}, "location": "/var/log/auth.log"}
     row = sh.predict(build_alert_state(alert), dict(TRIAGE_QUESTIONS),
                      context={"alert_id": "SELFTEST", "note": "selftest"})

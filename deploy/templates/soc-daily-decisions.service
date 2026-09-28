@@ -1,6 +1,6 @@
 # systemd unit for the SOC daily decisions report (Track D, D1).
 #
-# Run on the SOC host (thing1 for the SOC fleet — same host
+# Run on the SOC host (edge host for the SOC fleet — same host
 # that owns /home/__SOC_USER__/.openclaw/audit_log.jsonl and
 # /opt/soc-openclaw/services/data/realtime_soc.jsonl).
 #
@@ -34,8 +34,8 @@
 #   - Persistent=true on the timer means a missed run (e.g. host
 #     was off) gets caught up at next boot, so we never lose a
 #     day's report.
-#   - Runs as user `wez` because the audit_log.jsonl is owned
-#     by wez; running as root would be a permissions downgrade.
+#   - Runs as user `operator` because the audit_log.jsonl is owned
+#     by operator; running as root would be a permissions downgrade.
 
 [Unit]
 Description=SOC daily decisions report (Track D, D1)

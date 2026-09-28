@@ -19,7 +19,7 @@ Stdlib-only (http.server + json). No Flask/fastapi dependency.
 
 Persistence: every ingested alert + any auto-escalated incident appended to:
 
-  /home/wez/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl
+  /home/operator/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl
 
 JSONL records: {"type":"alert|incident", "ts":"...", ...fields}
 
@@ -57,7 +57,7 @@ BIND_PORT = int(os.environ.get("REALTIME_SOC_PORT", "8765"))
 LOG_PATH = Path(
     os.environ.get(
         "REALTIME_SOC_LOG",
-        "/home/wez/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl",
+        "/home/operator/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl",
     )
 )
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)

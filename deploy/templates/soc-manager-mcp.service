@@ -1,7 +1,7 @@
 # systemd unit for the SOC Wazuh manager API MCP server (Track C, C2 — 2026-08-08).
 #
 # Run on the SOC host (the one with network access to the Wazuh
-# manager on :55000 — typically thing1 for the SIEM fleet).
+# manager on :55000 — typically edge host for the SIEM fleet).
 #
 # Install:
 #   sudo cp scripts/soc/soc-manager-mcp/soc-manager-mcp.service \
@@ -41,7 +41,7 @@ Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Manager creds (read from the canonical secret file). The
 # ExecStartPre is a separate script (NOT an inline `sh -c` string)
 # because systemd expands `%\w` specifiers in unit-file values,
-# and `%s` is the user's login shell — for user `wez` that's
+# and `%s` is the user's login shell — for user `operator` that's
 # `/usr/bin/bash`, which would silently corrupt any inline
 # `printf "...%s\n..."` format string. Verified 2026-08-08 21:04 UTC.
 ExecStartPre=/home/__SOC_USER__/.openclaw/agents/soc-manager-mcp/pre-start.sh

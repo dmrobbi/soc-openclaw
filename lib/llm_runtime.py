@@ -104,7 +104,7 @@ def _resolve_openclaw_path() -> str:
     """Locate the `openclaw` binary, with safe fallbacks for cron.
 
     Cron on Debian/Ubuntu runs with PATH=/usr/bin:/bin by default,
-    which omits both /usr/local/bin and /home/wez/.npm-global/bin
+    which omits both /usr/local/bin and /home/operator/.npm-global/bin
     where the openclaw runtime is typically installed. Trying
     `shutil.which` first respects any PATH the caller (or a wrapper
     script) has set, then falls back to the two known absolute paths.
@@ -118,7 +118,7 @@ def _resolve_openclaw_path() -> str:
         return found
     for candidate in (
         "/usr/local/bin/openclaw",
-        "/home/wez/.npm-global/bin/openclaw",
+        "/home/operator/.npm-global/bin/openclaw",
     ):
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
@@ -216,13 +216,13 @@ def call_openclaw(
 
     # OpenClaw 2026.7.1 response shapes (two variants observed):
     #
-    #   A) Top-level (trooper2 SOC gateway):
+    #   A) Top-level (control host SOC gateway):
     #      {"payloads": [{"text": "...", "mediaUrl": null}, ...],
     #       "meta": {"durationMs": N, "agentMeta": {"model": "...",
     #                "sessionId": "..."}, "aborted": false,
     #                "usage": {...}, ...}}
     #
-    #   B) Wrapped (thing1 main gateway):
+    #   B) Wrapped (edge host main gateway):
     #      {"runId": "...", "status": "ok", "summary": "completed",
     #       "result": {"payloads": [...], "meta": {...}}}
     #

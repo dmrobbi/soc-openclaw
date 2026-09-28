@@ -623,7 +623,7 @@ def _smoke_validation() -> int:
     try:
         create_ticket(
             title="x", body="y", severity="low",
-            labels=["agent:darth"])  # colon not allowed
+            labels=["agent:agent-one"])  # colon not allowed
     except ValueError as e:
         assert "label[0] bad format" in str(e)
         print("  ✓ rejects label with bad chars (e.g. ':')")

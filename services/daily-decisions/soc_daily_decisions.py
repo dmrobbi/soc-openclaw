@@ -51,7 +51,7 @@ Cron
   0 6 * * * cd /opt/soc-openclaw && \\
       /usr/bin/python3 scripts/soc/soc_daily_decisions.py \\
       --day $(date -u +%Y-%m-%d) \\
-      >> /home/wez/logs/soc-daily-decisions.log 2>&1
+      >> /home/operator/logs/soc-daily-decisions.log 2>&1
 
 Created 2026-08-08 by Ciceron as part of Track D (D1).
 """
@@ -84,7 +84,7 @@ DEFAULT_AUDIT_LOG = os.environ.get(
 DEFAULT_REALTIME_LOG = os.environ.get(
     "SOC_REALTIME_LOG", "") or os.path.expanduser(
     "~/.openclaw/soc/data/realtime_soc.jsonl")
-DEFAULT_OUTPUT_DIR = "/home/wez/.openclaw/workspace/memory"
+DEFAULT_OUTPUT_DIR = "/home/operator/.openclaw/workspace/memory"
 DEFAULT_C4_URL = "http://127.0.0.1:8769"
 SCAN_RESULTS_DIR_DEFAULT = os.environ.get(
     "SOC_SCAN_RESULTS_DIR",
@@ -451,7 +451,7 @@ def _output_path(output: Optional[str], day: str) -> str:
 # agent turn (lands in the operator's main chat); fall back to SMTP
 # (self-addressed via the reports mailbox) when the CLI is missing or
 # stalls. Mirrors deploy/notify-healthcheck-failure.sh delivery order.
-DEFAULT_MAILBOX_ENV = ("/home/wez/.openclaw/workspace/secrets/"
+DEFAULT_MAILBOX_ENV = ("/home/operator/.openclaw/workspace/secrets/"
                        "reports-bedimsecurity-mailbox.env")
 DELIVERY_TIMEOUT_S = 45
 
@@ -591,7 +591,7 @@ def _smoke() -> int:
         {"ts": "2026-08-08T10:00:00.000+00:00", "runId": "r1",
          "agent_id": "soc-triage", "tenant_id": "example-soc",
          "input_kind": "decision_prompt",
-         "input_summary": "L12 5763 agent=darth",
+         "input_summary": "L12 5763 agent=agent-one",
          "model_output": json.dumps({
              "severity_class": "high",
              "is_known_pattern": True,
@@ -635,7 +635,7 @@ def _smoke() -> int:
         {"ts": "2026-08-08T10:03:00.000+00:00", "runId": "r4",
          "agent_id": "soc-triage", "tenant_id": "example-soc",
          "input_kind": "decision_prompt",
-         "input_summary": "L8 5715 agent=gus2",
+         "input_summary": "L8 5715 agent=GPU host",
          "model_output": "", "model": "stub", "duration_ms": 5,
          "outcome": "error",
          "error": "openclaw binary not on PATH",

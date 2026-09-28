@@ -23,7 +23,7 @@ REPORTS_MAILBOX_PW. Optional: REALTIME_SOC_URL (used to fetch incident
 context), POLL_SEC (default 30), DB_PATH (default /var/tmp or workspace).
 
 Run as a service: scripts/wazuh-integrations/imap-watcher.service (added
-in this commit). Logs to /home/wez/logs/imap-watcher.log.
+in this commit). Logs to /home/operator/logs/imap-watcher.log.
 
 Tested 2026-08-06 against mail.example.com:993 (mailcow). Free-form
 question → reply in ~6s; threaded reply in ~7s.
@@ -82,7 +82,7 @@ def _bootstrap_recent_outbound() -> int:
     log = Path(
         os.environ.get(
             "REALTIME_SOC_LOG",
-            "/home/wez/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl",
+            "/home/operator/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl",
         )
     )
     if not log.exists():
@@ -117,11 +117,11 @@ def _bootstrap_recent_outbound() -> int:
 # ---------------------------------------------------------------------------
 LOG_PATH = Path(os.environ.get(
     "IMAP_WATCHER_LOG",
-    "/home/wez/logs/imap-watcher.log",
+    "/home/operator/logs/imap-watcher.log",
 ))
 DB_PATH = Path(os.environ.get(
     "IMAP_WATCHER_DB",
-    "/home/wez/.openclaw/workspace/agentic-ai/data/imap_watcher.sqlite",
+    "/home/operator/.openclaw/workspace/agentic-ai/data/imap_watcher.sqlite",
 ))
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -203,7 +203,7 @@ class MailConfig:
     def load(cls) -> "MailConfig":
         envfile = os.environ.get(
             "WAZUH_REPORTS_ENV",
-            "/home/wez/.openclaw/workspace/secrets/reports-example-soc-mailbox.env",
+            "/home/operator/.openclaw/workspace/secrets/reports-example-soc-mailbox.env",
         )
         d: Dict[str, str] = {}
         for line in open(envfile):
@@ -441,7 +441,7 @@ def fetch_incident_context(incident_id: str) -> Optional[Dict[str, Any]]:
     log = Path(
         os.environ.get(
             "REALTIME_SOC_LOG",
-            "/home/wez/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl",
+            "/home/operator/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl",
         )
     )
     if not log.exists():

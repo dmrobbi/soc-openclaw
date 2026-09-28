@@ -28,7 +28,7 @@ points, no emoji. The summary must include:
    `rule.description`, `agent.name`, and any IPs / users / paths
    present in `data.*`. Cite the rule id.
 3. **Recommended next action** — concrete and small. Examples:
-   "Verify the auth.log entries on darth for source 10.9.8.7
+   "Verify the auth.log entries on agent-one for source 10.9.8.7
    and rotate the root password if the source is unknown.",
    "No action required; this is an operational lifecycle event."
 

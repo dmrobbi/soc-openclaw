@@ -26,7 +26,7 @@ if [ -f "$SCRIPT_DIR/soc-stack.env" ]; then
 fi
 
 SOC_HOME="${SOC_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-SOC_USER="${SOC_USER:-wez}"
+SOC_USER="${SOC_USER:-operator}"
 SOC_STATE_DIR="${SOC_STATE_DIR:-/home/$SOC_USER/.openclaw/soc}"
 SOC_AGENTS_DIR="${SOC_AGENTS_DIR:-/home/$SOC_USER/soc-agents}"
 SOC_LOGS_DIR="${SOC_LOGS_DIR:-/home/$SOC_USER/logs}"

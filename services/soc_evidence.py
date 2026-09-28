@@ -385,7 +385,7 @@ def _derive_status(control: Dict[str, Any],
     # findings stayed manual_review forever).
     # stig_remediate_refused is NOT fail-grade (2026-09-14): a refusal
     # is a policy decision ("human handles it"), not measured
-    # non-compliance — thing1 had unattended-upgrades installed and
+    # non-compliance — edge host had unattended-upgrades installed and
     # enabled while a severity-policy refusal graded the control fail.
     has_fail = any(e.get("status") == "fail" or
                    e.get("kind") == "stig_evidence"

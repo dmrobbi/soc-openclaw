@@ -72,7 +72,7 @@ WAZUH_AGENTIC_ENABLE=1
 `.env` the Wazuh manager container must read through a bind-mount (e.g.
 its `/etc/reports-mailbox.env`) must be **readable by the container
 user (uid 999)**, NOT chmod 600: `chown 999:<SOC_USER gid> <file> &&
-chmod 640 <file>`. A 600 wez-owned copy silently drops every level≥12
+chmod 640 <file>`. A 600 operator-owned copy silently drops every level≥12
 alert from the classification pipeline. `deploy/healthcheck.sh`
 asserts these perms (999:<uid>:640 for the mailbox env, <uid>:<uid>:600
 for the `soc/secrets/*.env`) and fails on drift.

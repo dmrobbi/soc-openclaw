@@ -61,7 +61,7 @@ Verification that inventory is flowing (run on the SOC host, using the
 indexer creds env):
 
 ```python
-# python3 - (sys.path.insert('/home/wez/.openclaw/soc'); import indexer)
+# python3 - (sys.path.insert('/home/operator/.openclaw/soc'); import indexer)
 import indexer
 count = indexer.req(
     'GET', '/wazuh-states-inventory-packages-*/_count',

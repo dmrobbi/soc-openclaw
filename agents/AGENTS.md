@@ -70,7 +70,7 @@ and `MEMORY.md` (long-term curated context).
    ~/.openclaw/agents/soc-triage/MEMORY.md
    ```
    On the manager container they are bind-mounted into
-   `/home/wez/soc-agents/<id>/`. Bootstrap script:
+   `/home/operator/soc-agents/<id>/`. Bootstrap script:
    `bootstrap-b4-agents.sh`.
 
 3. **Harness wiring.** The openclaw agent harness reads the
@@ -92,21 +92,21 @@ and `MEMORY.md` (long-term curated context).
 ### How tasks are **used**
 
 ```
-   alert (wazuh 40112 on darth from 10.9.8.7)
+   alert (wazuh 40112 on agent-one from 10.9.8.7)
       │
       ▼
    wazuh-integratord  (manager container)
       │  via <integration>custom-agentic-soc-send</integration>
       ▼
-   agentic-soc-send.py  (POST /ingest on thing1)
+   agentic-soc-send.py  (POST /ingest on edge host)
       │
       ▼
-   realtime_soc_server  (:8765, thing1)
-      │  writes to /home/wez/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl
+   realtime_soc_server  (:8765, edge host)
+      │  writes to /home/operator/.openclaw/workspace/agentic-ai/data/realtime_soc.jsonl
       │  creates incident inc-XXXXXXXX-YYYY
       │
       ▼  (every 5 min, soc-realtime-shipper.timer)
-   trooper2  (SOC agent gateway)
+   control host  (SOC agent gateway)
       │
       ▼
    soc-narrator  → routes alert to specialists
@@ -212,8 +212,8 @@ LISTEN 0.0.0.0:8765    soc-realtime-soc-server
 
 A repeat-incident scenario (same source IP, same host)
 **explicitly cites the prior incident** in the agent's
-response. Verified with soc-triage on darth 40112 / 10.9.8.7:
-the agent's reasoning named `inc-2024-darth-brute` and bumped
+response. Verified with soc-triage on agent-one 40112 / 10.9.8.7:
+the agent's reasoning named `inc-2024-agent-one-brute` and bumped
 confidence from 0.92 → 0.93.
 - Do not send email / open tickets / page humans directly.
   The dispatcher (B3 + D3 routing) is the only path.

@@ -62,7 +62,7 @@ else
 fi
 
 # --- 2) SMTP fallback (self-addressed via the reports mailbox) --------------
-ENV_FILE="${SOC_MAILBOX_ENV:-/home/wez/.openclaw/workspace/secrets/reports-bedimsecurity-mailbox.env}"
+ENV_FILE="${SOC_MAILBOX_ENV:-/home/operator/.openclaw/workspace/secrets/reports-bedimsecurity-mailbox.env}"
 if [ -r "$ENV_FILE" ]; then
   python3 - "$ENV_FILE" "$MSG" <<'PYEOF'
 import sys

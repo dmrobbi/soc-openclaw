@@ -169,7 +169,7 @@ def tool_search_alerts(args: Dict[str, Any]) -> Dict[str, Any]:
         # the keyword subfield so we get the raw value. Verified
         # 2026-08-12: 326 events for mac-m4 (id=014) were invisible
         # to dashboard queries until this fix; single-token names
-        # (darth, gus2, cactus) were unaffected.
+        # (agent-one, GPU host, agent-two) were unaffected.
         must.append({
             "bool": {
                 "should": [

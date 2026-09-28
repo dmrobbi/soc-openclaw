@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SOC STIG auto-remediation with mandatory snapshots (Track E, E2).
 
-Ported 2026-09-14 from stsgym-work feat/soc-phase5-curator
+Ported 2026-09-14 from soc-openclaw feat/soc-phase5-curator
 (scripts/soc/soc_stig_remediate.py) into soc-openclaw services/.
 Port adaptations (behaviour otherwise preserved):
 
@@ -330,7 +330,7 @@ def _remote_ctx(args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         raise RemediationError(f"host {host!r} has no IP in the fleet")
     return {"name": host, "ip": ip,
             "port": os.environ.get("SOC_SCAN_SSH_PORT", "22"),
-            "user": os.environ.get("SOC_SCAN_SSH_USER", "wez")}
+            "user": os.environ.get("SOC_SCAN_SSH_USER", "operator")}
 
 
 def _run_on(ctx: Optional[Dict[str, Any]], cmd: str,
@@ -346,9 +346,9 @@ def _run_on(ctx: Optional[Dict[str, Any]], cmd: str,
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
            "-o", "StrictHostKeyChecking=accept-new",
            "-p", str(ctx.get("port") or 22),
-           f"{ctx.get('user') or 'wez'}@{ctx['ip']}", "sudo -n bash -s"]
-    # 2026-09-17: one retry for transient ssh failures. The evgen-a/b/c
-    # fleet hosts sit behind trooper2's NAT-only libvirt network and are
+           f"{ctx.get('user') or 'operator'}@{ctx['ip']}", "sudo -n bash -s"]
+    # 2026-09-17: one retry for transient ssh failures. The lab-a/b/c
+    # fleet hosts sit behind control host's NAT-only libvirt network and are
     # reached via an ssh ProxyCommand over Tailscale; a link hiccup
     # surfaces as rc=255 (connection error) or rc=124 (timeout) and used
     # to fail the whole remediation for that (host, control) pair even

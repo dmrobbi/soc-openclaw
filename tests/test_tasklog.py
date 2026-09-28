@@ -8,13 +8,13 @@ import soc_tasklog as tl
 
 def test_record_and_load_roundtrip(tmp_tasks_log):
     tid = tl.record_task(
-        "compliance_scan", "thing1", "running", "2026-09-17T10:00:00Z",
+        "compliance_scan", "edge host", "running", "2026-09-17T10:00:00Z",
         details={"profile": "CIS L2"})
-    assert tid == tl._task_id("2026-09-17T10:00:00Z", "compliance_scan", "thing1")
+    assert tid == tl._task_id("2026-09-17T10:00:00Z", "compliance_scan", "edge host")
     rows = tl.load_tasks()
     assert len(rows) == 1
     assert rows[0]["kind"] == "compliance_scan"
-    assert rows[0]["target"] == "thing1"
+    assert rows[0]["target"] == "edge host"
     assert rows[0]["status"] == "running"
     assert rows[0]["details"] == {"profile": "CIS L2"}
 
@@ -27,7 +27,7 @@ def test_missing_file_loads_empty(tmp_tasks_log):
 def test_load_newest_first_and_limit(tmp_tasks_log):
     for ts in ("2026-09-17T10:00:00Z", "2026-09-17T11:00:00Z",
                "2026-09-17T12:00:00Z"):
-        tl.record_task("compliance_scan", "thing1", "running", ts)
+        tl.record_task("compliance_scan", "edge host", "running", ts)
     rows = tl.load_tasks()
     assert [r["ts"] for r in rows] == [
         "2026-09-17T12:00:00Z", "2026-09-17T11:00:00Z",
@@ -37,10 +37,10 @@ def test_load_newest_first_and_limit(tmp_tasks_log):
 
 
 def test_latest_row_wins_dedup(tmp_tasks_log):
-    tid = tl.record_task("run_scan", "cactus", "running",
+    tid = tl.record_task("run_scan", "agent-two", "running",
                          "2026-09-17T10:00:00Z")
     # same ts+kind+target -> same id; append a "done" row for it
-    tl.record_task("run_scan", "cactus", "done", "2026-09-17T10:00:00Z",
+    tl.record_task("run_scan", "agent-two", "done", "2026-09-17T10:00:00Z",
                    ended="2026-09-17T10:05:00Z")
     rows = tl.load_tasks()
     assert len(rows) == 1
@@ -50,9 +50,9 @@ def test_latest_row_wins_dedup(tmp_tasks_log):
 
 
 def test_get_task_history(tmp_tasks_log):
-    tid = tl.record_task("run_scan", "cactus", "running",
+    tid = tl.record_task("run_scan", "agent-two", "running",
                          "2026-09-17T10:00:00Z")
-    tl.record_task("run_scan", "cactus", "done", "2026-09-17T10:00:00Z")
+    tl.record_task("run_scan", "agent-two", "done", "2026-09-17T10:00:00Z")
     task = tl.get_task(tid)
     assert task["status"] == "done"
     assert len(task["history"]) == 2

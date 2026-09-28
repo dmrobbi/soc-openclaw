@@ -19,8 +19,8 @@ Secrets, credentials, and the recovery paths that bite.
 
    ```bash
    docker exec wazuh-stack-wazuh.manager-1 cat /etc/reports-mailbox.env \
-     > /home/wez/.openclaw/soc/secrets/reports-mailbox.env
-   chmod 600 /home/wez/.openclaw/soc/secrets/reports-mailbox.env
+     > /home/operator/.openclaw/soc/secrets/reports-mailbox.env
+   chmod 600 /home/operator/.openclaw/soc/secrets/reports-mailbox.env
    ```
 
 ## Rotating the Wazuh API password (lost-secret procedure)
@@ -58,7 +58,7 @@ interactive-only.)
 ## Dashboard ↔ manager API credentials
 
 The Wazuh dashboard's plugin uses its own stored manager API credentials
-in `/home/wez/wazuh-stack/config/wazuh_dashboard/wazuh.yml` (bind-mounted
+in `/home/operator/wazuh-stack/config/wazuh_dashboard/wazuh.yml` (bind-mounted
 into the dashboard container). When the manager API password rotates,
 **that file must be updated too** — a stale password makes the plugin
 401 every five minutes and every Wazuh-native view (Overview, Agents,
@@ -70,7 +70,7 @@ Events) silently empties while the SOC dashboard keeps working.
 - The file is a **single-file bind mount**: edit it **in place** (never
   `os.replace`/rename a new file over it — the container keeps reading
   the old inode), keep ownership/mode readable by the container uid
-  (uid 1000; host file `wez:wez` 664 works), then
+  (uid 1000; host file `operator:operator` 664 works), then
   `sudo docker restart wazuh-stack_wazuh.dashboard_1`.
 - Signs of the stale-credential failure mode: repeated
   `cron-scheduler ... AxiosError 401` in the dashboard container logs.
@@ -105,7 +105,7 @@ The Wazuh manager container runs the alert pipeline (and therefore
   `sudo chown -R 999:999 ~/.openclaw-wazuh` (healthcheck asserts this
   hourly);
 - the mailbox env copy the container bind-mounts must be
-  `chown 999:<SOC_USER gid> && chmod 640` — 600 wez-owned copies
+  `chown 999:<SOC_USER gid> && chmod 640` — 600 operator-owned copies
   silently drop every level≥12 alert (the 2026-09-12 incident).
 
 ## Exposure posture

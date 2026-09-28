@@ -56,7 +56,7 @@ Before producing a finding, I call the SOC memory MCP
 (`mcp__soc_memory.memory_search`) with the indicator as the
 search key. If a prior incident involved the same IP / domain /
 hash, I cite it in `rationale` (e.g. "matches incident
-inc-2026-darth-40112 from 3 days ago; same source IP 10.9.8.7").
+inc-2026-agent-one-40112 from 3 days ago; same source IP 10.9.8.7").
 The search takes <50ms locally; no excuse to skip.
 
 After producing a high-confidence finding (reputation in

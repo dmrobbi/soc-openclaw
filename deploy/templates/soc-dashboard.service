@@ -1,7 +1,7 @@
 # systemd unit for the SOC web dashboard (Track D, D2 — 2026-08-08).
 #
 # Run on the SOC host (the one running the C4 / C3 MCPs —
-# typically thing1 for the SIEM fleet).
+# typically edge host for the SIEM fleet).
 #
 # Install:
 #   sudo cp scripts/soc/soc-dashboard/soc-dashboard.service \
@@ -44,12 +44,12 @@ Environment="SOC_ROUTING_CONFIG=/home/__SOC_USER__/.openclaw/soc/soc-routing.yam
 Environment="SOC_EVIDENCE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/evidence"
 Environment="SOC_SCORE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/scores"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# Bind to the Tailscale IP (default <lan-ip> for thing1) instead of
+# Bind to the Tailscale IP (default <lan-ip> for edge host) instead of
 # 127.0.0.1 so the dashboard is reachable from any tailnet device.
 # Set to 127.0.0.1 for loopback-only on the SOC host itself.
 # To bind to LAN instead, use the LAN IP + a firewall rule.
 # Bind to 0.0.0.0 (all interfaces) so the dashboard is reachable on
-# every IP the host has: Tailscale (e.g. <lan-ip> for thing1), LAN
+# every IP the host has: Tailscale (e.g. <lan-ip> for edge host), LAN
 # (e.g. <lan-ip>), and loopback (127.0.0.1). Set to 127.0.0.1 for
 # loopback-only, or to a specific IP for tighter scoping.
 # Changed 2026-08-10 23:33 UTC from <lan-ip> (Tailscale-only) to
@@ -59,7 +59,7 @@ Environment="SOC_DASHBOARD_PORT=8771"
 Environment="SOC_DASHBOARD_C4_URL=http://127.0.0.1:8769"
 Environment="SOC_DASHBOARD_C3_URL=http://127.0.0.1:8768"
 Environment="SOC_DASHBOARD_C1_URL=http://127.0.0.1:8766"
-Environment="SOC_FLEET_EXTRA=evgen-d:192.168.122.44:rocky:8,evgen-e:192.168.122.14:rocky:9,evgen-f:192.168.122.101:rocky:10"
+Environment="SOC_FLEET_EXTRA=lab-d:192.168.122.44:rocky:8,lab-e:192.168.122.14:rocky:9,lab-f:192.168.122.101:rocky:10"
 # Port 8771 (not 8770) — 8770 is owned by soc-memory-mcp (Track A3).
 # Verified 2026-08-08 20:58 UTC during C2/C3/C4/D2 wire-up; see carry-forward.
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-dashboard/server.py

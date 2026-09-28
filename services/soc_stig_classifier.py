@@ -322,7 +322,7 @@ def classify_stig_finding(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     function:
 
     1. Builds a host-family hint from `agent.name`
-       (e.g. "darth" → "rhel", "ubuntu" → "ubuntu", or
+       (e.g. "agent-one" → "rhel", "ubuntu" → "ubuntu", or
        matched via the host's `os` field if present).
     2. For each loaded catalogue file (alphabetical order),
        checks whether its `benchmark` matches the host family
@@ -596,8 +596,8 @@ def _smoke() -> int:
     # 2. Known mapping: 53503 -> AU-2 (audit SUID)
     alert = {
         "rule": {"id": "53503", "level": 8, "description": "..."},
-        "agent": {"name": "darth"},
-        "data": {"srcip": "10.0.0.99"},
+        "agent": {"name": "agent-one"},
+        "data": {"srcip": "192.0.2.99"},
     }
     result = classify_stig_finding(alert)
     assert result is not None, "53503 should classify"
@@ -608,7 +608,7 @@ def _smoke() -> int:
     assert "auditd" in result["remediate_hint"].lower(), result
 
     # 3. Same alert, accessed via rule_name (the JSONL shape)
-    alert2 = {"rule_name": "53503", "affected_asset": "darth"}
+    alert2 = {"rule_name": "53503", "affected_asset": "agent-one"}
     result2 = classify_stig_finding(alert2)
     assert result2 is not None, "53503 via rule_name should classify"
     assert result2["stig_id"] == result["stig_id"]
@@ -637,13 +637,13 @@ def _smoke() -> int:
     assert result5["control_id"] == "AC-2", result5
     assert "credential" in result5["remediate_hint"].lower(), result5
 
-    # 8. Host-aware mapping: rule 53503 from a "darth" agent
+    # 8. Host-aware mapping: rule 53503 from a "agent-one" agent
     # should pick the RHEL Vuln id (RHEL-08-010010), not the
-    # Ubuntu one (UBTU-22-232010), because darth runs RHEL 9.
+    # Ubuntu one (UBTU-22-232010), because agent-one runs RHEL 9.
     alert6 = {
         "rule": {"id": "53503"},
-        "agent": {"name": "darth", "ip": "10.0.0.114"},
-        "data": {"srcip": "10.0.0.99"},
+        "agent": {"name": "agent-one", "ip": "192.0.2.114"},
+        "data": {"srcip": "192.0.2.99"},
     }
     result6 = classify_stig_finding(alert6)
     assert result6 is not None, result6
@@ -653,7 +653,7 @@ def _smoke() -> int:
     # 9. Same rule, Ubuntu host -> Ubuntu Vuln id
     alert7 = {
         "rule": {"id": "53503"},
-        "agent": {"name": "ubuntu-host-1", "ip": "10.0.0.50"},
+        "agent": {"name": "ubuntu-host-1", "ip": "192.0.2.50"},
         "data": {},
     }
     result7 = classify_stig_finding(alert7)

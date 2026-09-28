@@ -1,7 +1,7 @@
 # systemd unit for the SOC ticket API MCP server (Track C, C3 — 2026-08-08).
 #
 # Run on the SOC host (the one with the canonical
-# ~/.openclaw/soc_tickets.jsonl — typically thing1 for the
+# ~/.openclaw/soc_tickets.jsonl — typically edge host for the
 # SIEM fleet).
 #
 # Install:

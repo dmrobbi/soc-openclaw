@@ -31,7 +31,7 @@ finding, or repair a service.
 | When | What |
 |---|---|
 | continuous | Wazuh alerts → L12+ alerts get narrated, triaged, e-mailed, escalated into tickets |
-| every 5 min | audit + realtime records mirrored to the agent-side host (trooper2) |
+| every 5 min | audit + realtime records mirrored to the agent-side host (control host) |
 | hourly | healthcheck: unit/ACL/drift assertions, alerts on failure |
 | 06:00 UTC | daily decisions report (what the SOC saw and did yesterday) |
 | 06:30 UTC | nightly compliance loop (below) |

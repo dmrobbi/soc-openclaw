@@ -35,7 +35,7 @@ them:
 
 Usage:
     python3 soc_scanner.py --host vader --dry-run
-    python3 soc_scanner.py --host thing1 --host-ip 127.0.0.1 \
+    python3 soc_scanner.py --host edge host --host-ip 127.0.0.1 \
         --family ubuntu --profile cis_level1_server --tenant bedimsecurity
     python3 soc_scanner.py --fleet
 """
@@ -61,7 +61,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # services/ (soc_evidence, soc_stig, soc_routing)
 
 # ---- configuration (env-overridable) ---------------------------------------
-SCAN_USER = os.environ.get("SOC_SCAN_SSH_USER", "wez")
+SCAN_USER = os.environ.get("SOC_SCAN_SSH_USER", "operator")
 SSH_PORT = os.environ.get("SOC_SCAN_SSH_PORT", "22")
 SCAN_TIMEOUT = int(os.environ.get("SOC_SCAN_TIMEOUT", "3600"))
 PARALLEL = int(os.environ.get("SOC_SCAN_PARALLEL", "8"))
@@ -77,7 +77,7 @@ C1_URL = os.environ.get("SOC_WAZUH_MCP_URL",
 # Root-mode scans: run remote oscap via `sudo -n` so checks that read
 # root-only state (audit log files 0600, /var/log/audit 0750 — AU-9
 # rules) verify instead of false-failing under the ssh user (2026-09-15,
-# wez request). SOC_SCAN_SUDO=0 forces the legacy user-mode oscap-ssh
+# operator request). SOC_SCAN_SUDO=0 forces the legacy user-mode oscap-ssh
 # path. Hosts are probed first; a missing sudo falls back silently.
 SUDO_SCAN_ENABLED = os.environ.get(
     "SOC_SCAN_SUDO", "1").strip().lower() not in ("0", "false", "no", "off")
@@ -103,7 +103,7 @@ SSG_PROFILES = {
                "xccdf_org.ssgproject.content_profile_cis_server_l2"),
     "centos": ("ssg-centos8-ds.xml",
                "xccdf_org.ssgproject.content_profile_cis_server_l2"),
-    # Rocky 8/9/10 test fleet (evgen-d/e/f, docker on the SOC host).
+    # Rocky 8/9/10 test fleet (lab-d/e/f, docker on the SOC host).
     # Newer SSG consolidated the CIS profiles: content_profile_cis =
     # Level 2 (no separate cis_server_l2 in these DS builds). Version
     # picks in scan_host (ROCKY_DS_BY_MAJ).
@@ -185,7 +185,7 @@ def fleet_agents() -> List[Dict[str, Any]]:
     # os_version field inherits the registry row's value (a bare
     # 'name:ip' row acts as a pure IP pin), and the registry's real
     # agent id is kept so tool calls keep working. Rows with no
-    # registry match append unchanged (the evgen-d/e/f case).
+    # registry match append unchanged (the lab-d/e/f case).
     for row in [r.strip() for r in
                 os.environ.get("SOC_FLEET_EXTRA", "").split(",")
                 if r.strip()]:
@@ -454,7 +454,7 @@ def _sudo_remote_scan(agent: Dict[str, Any], name: str, ip: str,
                              f"{SCAN_TIMEOUT}s",
                     "stdout_tail": logtxt[-800:]}
         # results/report are written by root under sudo; read them back
-        # with `sudo -n cat` (scp as wez could hit a restrictive umask).
+        # with `sudo -n cat` (scp as operator could hit a restrictive umask).
         # fetch the pre-remediation results (kept as the audit trail
         # when a remediation pass follows)
         pre_path = (results_xml.with_name(
@@ -620,7 +620,7 @@ def scan_host(agent: Dict[str, Any], day: str,
 
     # ignore_list.yml — exception rules are deselected via an XCCDF
     # tailoring; excluded rules return notselected and stay out of
-    # grading/scoring (verified 2026-09-18 on thing1).
+    # grading/scoring (verified 2026-09-18 on edge host).
     ignore = load_ignore_list()
     ign_entries = effective_ignore_entries(ignore, name)
     tailoring_path: Optional[str] = None

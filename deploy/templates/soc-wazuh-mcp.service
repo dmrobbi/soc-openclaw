@@ -15,7 +15,7 @@ Environment="WAZUH_INDEXER_USERNAME=admin"
 # 2026-09-14: the indexer password was inline here (a stale 3-char
 # value — the live 401s broke C1 list_agent_os, which voided the
 # weekly fleet scan's ubuntu DS picks). Password lives in the
-# secrets env file (chmod 600, wez-owned) — never commit it.
+# secrets env file (chmod 600, operator-owned) — never commit it.
 EnvironmentFile=/home/__SOC_USER__/.openclaw/soc/secrets/wazuh-indexer.env
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-wazuh-mcp/server.py
 Restart=on-failure

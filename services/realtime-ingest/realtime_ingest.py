@@ -158,7 +158,7 @@ class LiteTriageAgent:
         src_ip = self._field(a, "src_ip", "srcip", "source_ip")
         ts = self._field(a, "timestamp", "ts", default=datetime.now(timezone.utc).isoformat())
 
-        # Phase 2 (2026-09-26, wez-approved option B): NO LLM turn per alert.
+        # Phase 2 (2026-09-26, operator-approved option B): NO LLM turn per alert.
         # gemma soc-triage turns cost ~120k prompt tokens (multi-minute on the
         # single-slot server). Deterministic severity (below, per the SOC
         # contract) + the laya shadow (log-only) carry triage; the LLM stays
@@ -188,7 +188,7 @@ class LiteTriageAgent:
             sev = "informational"
         # (LLM regex override removed 2026-09-26 — dead since inception: the
         # regex never matched `"severity_class":` output; see
-        # soc-llm-control/docs/REPORT-OPTION-B-deterministic-severity.md S4.)
+        # laya-control/docs/REPORT-OPTION-B-deterministic-severity.md S4.)
 
         alert = {
             "alert_id": alert_id,

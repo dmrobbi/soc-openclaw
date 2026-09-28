@@ -2,8 +2,8 @@
 # (Track A, task A3 — 2026-08-08).
 #
 # Run on the SOC host (the one running the realtime SOC server
-# and the openclaw agent harness — currently thing1, with
-# trooper2 as the future SOC-gateway host per A2 follow-up).
+# and the openclaw agent harness — currently edge host, with
+# control host as the future SOC-gateway host per A2 follow-up).
 #
 # Install:
 #   sudo cp scripts/soc/soc-memory-mcp/soc-memory-mcp.service \

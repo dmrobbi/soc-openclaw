@@ -37,6 +37,6 @@ global: []
 
 hosts: {}
 # example:
-#   evgen-a:
+#   lab-a:
 #     - rule: is_fips_mode_enabled
 #       reason: "fips crypto policy breaks the demo service"

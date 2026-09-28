@@ -462,7 +462,7 @@ def tool_tickets_list_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _mask_ip_value(v: str) -> str:
-    """"100.115.156.115" -> "100.x.x.x" (first octet only)."""
+    """"100.64.0.30" -> "100.x.x.x" (first octet only)."""
     m = re.fullmatch(r"(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}", str(v).strip())
     return f"{m.group(1)}.x.x.x" if m else v
 
@@ -742,7 +742,7 @@ def tool_compliance_report(args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         from soc_evidence import tool_evidence_summary
     except ImportError:
-        # soc_evidence lives in stsgym-work; not ported yet — degrade
+        # soc_evidence lives in soc-openclaw; not ported yet — degrade
         # instead of crashing the whole report.
         tool_evidence_summary = None
     routing_cfg = os.environ.get("SOC_ROUTING_CONFIG") or None
@@ -1724,8 +1724,8 @@ def _smoke() -> int:
                     timeout=2) as r:
         assert r.status == 200
 
-    # SPA route /stig/host/darth (per-host STIG drill-down)
-    with ur.urlopen(f"http://127.0.0.1:{port}/stig/host/darth",
+    # SPA route /stig/host/agent-one (per-host STIG drill-down)
+    with ur.urlopen(f"http://127.0.0.1:{port}/stig/host/agent-one",
                     timeout=2) as r:
         assert r.status == 200
 

@@ -889,7 +889,7 @@ def _smoke() -> int:
             "tenant_id": "example-soc",
             "input_kind": "decision_prompt",
             "input_hash": "sha256:" + "a" * 64,
-            "input_summary": "L12 5763 agent=darth",
+            "input_summary": "L12 5763 agent=agent-one",
             "tool_calls": [{"name": "search_alerts", "args": {"min_level": 0}}],
             "model_output": "{\"severity_class\":\"low\"}",
             "model": "stub",
@@ -1043,14 +1043,14 @@ def _smoke() -> int:
     else:
         raise AssertionError("expected 400 for bad time_range")
 
-    # query_audit search=darth
+    # query_audit search=agent-one
     with ur.urlopen(ur.Request(
             f"http://127.0.0.1:{port}/tools/query_audit",
-            data=b'{"search":"darth"}', method="POST"),
+            data=b'{"search":"agent-one"}', method="POST"),
             timeout=2) as r:
         body = json.loads(r.read())
         assert body["total"] == 1
-        assert "darth" in body["hits"][0]["input_summary"]
+        assert "agent-one" in body["hits"][0]["input_summary"]
 
     # get_run smoke-1 (2 records, one with annotation)
     with ur.urlopen(ur.Request(

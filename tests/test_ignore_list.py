@@ -46,13 +46,13 @@ global:
   - rule: aide_build_database
     reason: "churn"
 hosts:
-  thing1:
+  edge host:
     - rule: is_fips_mode_enabled
       reason: "breaks containers"
 """, encoding="utf-8")
     r = sc.load_ignore_list(str(p))
     assert r["global"] == [{"rule": "aide_build_database", "reason": "churn"}]
-    assert r["hosts"]["thing1"] == [{"rule": "is_fips_mode_enabled",
+    assert r["hosts"]["edge host"] == [{"rule": "is_fips_mode_enabled",
                                      "reason": "breaks containers"}]
 
 
@@ -104,14 +104,14 @@ def test_build_tailoring_unmatched_entries(syn_ds, tmp_path):
 
 def test_effective_ignore_entries():
     ignore = {"global": [{"rule": "g1", "reason": ""}],
-              "hosts": {"thing1": [{"rule": "h1", "reason": ""}]}}
-    assert [e["rule"] for e in sc.effective_ignore_entries(ignore, "thing1")] == ["g1", "h1"]
+              "hosts": {"edge host": [{"rule": "h1", "reason": ""}]}}
+    assert [e["rule"] for e in sc.effective_ignore_entries(ignore, "edge host")] == ["g1", "h1"]
     assert [e["rule"] for e in sc.effective_ignore_entries(ignore, "other")] == ["g1"]
 
 
 def test_tailoring_xml_is_wellformed_and_shaped(syn_ds, tmp_path):
     """The generated tailoring must parse and carry the verified live
-    shape (2026-09-18, thing1): an oscap-loaded tailoring whose Profile
+    shape (2026-09-18, edge host): an oscap-loaded tailoring whose Profile
     extends the scan profile with select=false entries — full-profile
     eval returns the deselected rules as notselected."""
     from xml.etree import ElementTree as ET
