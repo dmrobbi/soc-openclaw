@@ -42,8 +42,62 @@ fi
 
 echo "--- sub-agents ---"
 OC_BIN="${OPENCLAW_BIN:-openclaw}"
-N=$("$OC_BIN" agents list 2>/dev/null | grep -cE "^- soc-")
-[ "$N" -ge 6 ] && ok "sub-agents registered: $N" || bad "sub-agents registered: $N (want >=6)"
+# The agents-list RPC can transiently return nothing while the gateway is
+# busy (memory-dreaming + soc-compliance-daily both fire at 03:00:00); a
+# suppressed stderr turned that into false "sub-agents: 0" pages
+# (2026-09-28..10-03: red at 03:00 only, green every other sampled hour).
+# Retry before declaring a registry drop.
+N=0
+for hc_try in 1 2 3; do
+  [ "$hc_try" -gt 1 ] && sleep 5
+  N=$("$OC_BIN" agents list 2>/dev/null | grep -cE "^- soc-") || true
+  [ "$N" -ge 6 ] && break
+done
+if [ "$N" -ge 6 ]; then
+  ok "sub-agents registered: $N"
+# Registry-file cross-check: the agents-list RPC can stay empty through the
+# WHOLE 03:00 busy window (2026-10-04/06/07: 3 retries could not cross it;
+# green every other hour), so fall back to the registry FILE — the explicit
+# agents.entries is the registration truth and is immune to gateway load.
+if [ "$N" -lt 6 ]; then
+  CFG_N=$(python3 -c "
+import json, os
+try:
+    cfg = json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+    entries = (cfg.get('agents') or {}).get('entries') or []
+    print(sum(1 for e in entries if str(e.get('id') or e.get('agentId') or e.get('name') or '').startswith('soc-')))
+except Exception:
+    print(0)
+" 2>/dev/null) || CFG_N=0
+  if [ "$CFG_N" -ge 6 ]; then
+    ok "sub-agents registered: $CFG_N (via config file; CLI RPC flapped under load)"
+    N=$CFG_N
+    AGENTS=$N
+  fi
+fi
+
+else
+  "$OC_BIN" agents list 2>&1 | tail -3 >&2
+  bad "sub-agents registered: $N (want >=6) — CLI output above; red here but green at other hours = RPC flap, not a restore signal"
+fi
+
+echo "--- kali-agent op-presence ---"
+# OPT-74 (KA-074): the kali agent's planner surface must stay importable on
+# this host. Planner-only probe: imports the two kali classes and counts
+# public op methods; nothing executes, no network.
+KALI_REPO="${SOC_KALI_REPO:-$HOME/agentic-ai}"
+KALI_N=$(cd "$KALI_REPO" 2>/dev/null && python3 -c "
+import importlib
+ka = importlib.import_module('agentic_ai.agents.cyber.kali').KaliAgent
+kv = importlib.import_module('agentic_ai.agents.cyber.kali_v2').KaliAgentV2
+n = len([x for x in dir(ka) if not x.startswith('_')])
+n2 = len([x for x in dir(kv) if not x.startswith('_')])
+assert n >= 100 and n2 >= 100, 'kali surface collapsed: %d+%d' % (n, n2)
+print(n + n2)" 2>/dev/null || echo 0)
+KALI_N=${KALI_N:-0}
+[ "$KALI_N" -gt 0 ] 2>/dev/null \
+  && ok "kali-agent ops: $KALI_N" \
+  || bad "kali-agent ops: $KALI_N (want >0) — kali import or composition failed; repo at $KALI_REPO"
 
 echo "--- secrets perms (assert, never rewrite) ---"
 # 2026-09-12 incident: reports-mailbox.env was 600 wez:wez, the wazuh
@@ -89,6 +143,40 @@ N=$(sudo -n find "$SD" -user 0 -not -type l 2>/dev/null | wc -l)
 [ "$N" -eq 0 ] && ok "pipeline state: no root-owned files" || bad "pipeline state: $N root-owned files — wazuh-context agent turns fail (run docker exec -u wazuh!)"
 O=$(sudo -n stat -c '%u' "$SD/identity" 2>/dev/null)
 [ "$O" = "999" ] && ok "identity dir owned by container user (999)" || bad "identity dir owner uid $O (want 999) — device credential unreadable by the pipeline"
+
+echo "--- laya gated decision path (SOC 2.6) ---"
+# 2026-09-28 incident: laya_shadow.py mode 660 raised PermissionError on
+# the import (an OSError, not ImportError) inside the uid-999 integration
+# children; every organic alert silently took the LLM path (90 s
+# timeouts) while all root-run drills passed. Probe the module load
+# exactly as the integration user, and assert the gate engages when
+# organic decisions are flowing.
+docker exec -u 999 wazuh-stack-wazuh.manager-1 /var/ossec/framework/python/bin/python3 -c "
+import importlib.util as ilu, sys
+spec = ilu.spec_from_file_location('soc_decision', '/usr/local/share/soc/soc_decision.py')
+m = ilu.module_from_spec(spec); sys.modules['soc_decision'] = m; spec.loader.exec_module(m)
+spec2 = ilu.spec_from_file_location('laya_shadow', '/usr/local/share/soc/laya_shadow.py')
+m2 = ilu.module_from_spec(spec2); spec2.loader.exec_module(m2)
+sh = m2.LayaShadow(mode='gated')
+assert sh.enabled
+" >/dev/null 2>&1 \
+  && ok "laya modules load as integration user (uid 999)" \
+  || bad "laya modules FAIL as integration user (uid 999) — check laya_shadow.py perms/import path"
+LAYA_MODE_NOW=$(docker exec wazuh-stack-wazuh.manager-1 printenv LAYA_MODE 2>/dev/null || echo off)
+AUDIT_LOG="${SOC_AUDIT_LOG:-$HOME/.openclaw-wazuh/audit_log.jsonl}"
+LAYA_RECENT=$(tail -1000 "$AUDIT_LOG" 2>/dev/null | grep -c laya_gated_decision || true)
+DEC_RECENT=$(tail -1000 "$AUDIT_LOG" 2>/dev/null | grep -c decision_prompt || true)
+if [ "$LAYA_MODE_NOW" = "gated" ]; then
+  if [ "$LAYA_RECENT" -ge 1 ]; then
+    ok "laya gate engaging ($LAYA_RECENT laya rows in last 1000 audit lines)"
+  elif [ "$DEC_RECENT" -ge 5 ]; then
+    bad "laya gate NOT engaging: $DEC_RECENT LLM decisions, 0 laya rows — check laya_shadow.py perms as uid 999"
+  else
+    ok "laya idle (no recent organic decisions)"
+  fi
+else
+  ok "laya mode: $LAYA_MODE_NOW (gate-engagement check skipped)"
+fi
 
 echo "---"
 echo "healthcheck: $PASS ok, $FAIL failed"

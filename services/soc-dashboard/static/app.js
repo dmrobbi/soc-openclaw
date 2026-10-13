@@ -412,6 +412,82 @@
       sev === "Low" ? "dim" : "";
     return badge(String(sev || "-") + " " + cls);
   }
+  async function pagePatches() {
+    let data;
+    try { data = await (await fetch("/patch-report.json")).json(); }
+    catch (e) { return errorView(e); }
+    if (!data || !data.ok) {
+      return errorView(new Error((data && data.error) || "no patch report yet"));
+    }
+    const rows = (data.endpoints || []);
+    const swept = rows.filter(
+      (r) => r.updates && r.updates.pending !== null && r.updates.pending !== undefined);
+    let totP = 0;
+    let totS = 0;
+    for (const r of swept) {
+      totP += (r.updates.pending || 0);
+      totS += (r.updates.security || 0);
+    }
+    const rebootHosts = rows
+      .filter((r) => r.updates && r.updates.reboot === "yes")
+      .map((r) => r.name);
+    const todoRows = [];
+    for (const n of rebootHosts) {
+      todoRows.push(n + ": REBOOT REQUIRED");
+    }
+    for (const r of swept) {
+      if ((r.updates.pending || 0) > 0) {
+        todoRows.push(r.name + ": " + r.updates.pending + " pending ("
+          + r.updates.security + " security), last upgrade "
+          + (r.updates.last_upgrade_age_days != null
+            ? r.updates.last_upgrade_age_days + "d ago" : "?"));
+      }
+    }
+    const out = [
+      el("h1", null, "Patches & updates"),
+      el("p", { class: "muted" },
+        "Generated " + esc(String(data.generated || "").slice(0, 16).replace("T", " "))
+        + " UTC \u00b7 fleet pending " + totP + " (" + totS + " security) \u00b7 "
+        + "reboots: " + (rebootHosts.join(", ") || "none")),
+    ];
+    if (todoRows.length > 0) {
+      const trows = [];
+      for (const t of todoRows) {
+        trows.push(el("tr", null, el("td", null, t)));
+      }
+      out.push(el("h2", null, "Todos to run"));
+      out.push(el("table", null, el("tbody", null, ...trows)));
+    } else {
+      out.push(el("p", { class: "muted" },
+        "Nothing queued \u2014 all swept endpoints are up to date."));
+    }
+    out.push(el("h2", null, "Endpoint state"));
+    out.push(el("table", null,
+      el("thead", null, el("tr", null,
+        el("th", null, "agent"), el("th", null, "OS"), el("th", null, "packages"),
+        el("th", null, "pending (security)"), el("th", null, "last upgrade"),
+        el("th", null, "CVEs C/H/M"), el("th", null, "reboot"))),
+      el("tbody", null, ...rows.map((r) => {
+        const u = r.updates || {};
+        const v = r.vulns || {};
+        const sev = v.by_severity || {};
+        const pend = u.pending;
+        return el("tr", null,
+          el("td", null, r.name),
+          el("td", null, ((r.os || {}).name || "?") + " "
+            + ((r.os || {}).version || "")),
+          el("td", null, r.packages != null ? String(r.packages) : "?"),
+          el("td", null, (pend !== null && pend !== undefined)
+            ? String(pend) + " (" + (u.security || 0) + ")" : (u.ssh || "-")),
+          el("td", null, u.last_upgrade_age_days != null
+            ? (u.last_upgrade_age_days + "d") : "-"),
+          el("td", null, (sev.critical || 0) + "/" + (sev.high || 0) + "/"
+            + (sev.medium || 0)),
+          el("td", null, u.reboot === "yes" ? "reboot required" : "-"));
+      }))));
+    out.push(el("p", null, el("a", { href: "/", "data-link": "" }, "\u2190 Overview")));
+    return out;
+  }
   async function pageCveFleet() {
     let data;
     try { data = await api("/tools/fleet_cve_overview", "POST", {}); }
@@ -1743,6 +1819,8 @@
     } else if (path.startsWith("/packages/")) {
       const name = decodeURIComponent(path.replace(/^\/packages\//, "").replace(/\/+$/, ""));
       if (name) nodes = await pagePackageDetail(name);
+    } else if (path === "/patches") {
+      nodes = await pagePatches();
     } else if (path === "/agents") {
       nodes = await pageAgents();
     } else if (path === "/tickets") {

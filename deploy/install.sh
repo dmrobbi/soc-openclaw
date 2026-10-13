@@ -45,7 +45,11 @@ run()  { if [ "$DRY_RUN" = "1" ]; then log "(dry-run) $*"; else "$@"; fi; }
 command -v python3 >/dev/null || fail "python3 not found"
 
 if [ -z "$OPENCLAW_BIN" ]; then
-  for c in "$(command -v openclaw || true)" /home/$SOC_USER/.npm-global/bin/openclaw /usr/local/bin/openclaw; do
+  # Durable install symlink first: command -v can resolve to an ephemeral
+  # shim (agent CLI wrappers), and a pinned absolute path outlives its
+  # backing node version (the 2026-09-14 nvm-tree removal silently broke
+  # the soc-healthcheck units for 13 days).
+  for c in /home/$SOC_USER/.npm-global/bin/openclaw "$(command -v openclaw || true)" /usr/local/bin/openclaw; do
     [ -x "$c" ] && OPENCLAW_BIN="$c" && break
   done
   [ -n "$OPENCLAW_BIN" ] || fail "openclaw binary not found; set OPENCLAW_BIN"

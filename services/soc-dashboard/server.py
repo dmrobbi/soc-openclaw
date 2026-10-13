@@ -142,6 +142,21 @@ def _http_get(url: str, timeout: float = 3.0) -> Tuple[int, Any]:
 # Routing config is loaded lazily so the dashboard can still
 # start if PyYAML is missing (the dashboard then falls back
 # to a tenant list derived from the C4 audit log).
+PATCH_REPORT_PATH = os.path.expanduser(
+    "~/.openclaw/soc/data/patch-monitor/report.json")
+
+
+def _load_patch_report() -> Optional[dict]:
+    """Load the patch/update/risk report written by soc_patch_report.py."""
+    try:
+        if not os.path.isfile(PATCH_REPORT_PATH):
+            return None
+        with open(PATCH_REPORT_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
 def _load_routing_tenants() -> Optional[Dict[str, Any]]:
     try:
         import yaml  # noqa: F401
@@ -1306,6 +1321,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, _redact_ips({"ok": True, "tenants": tenants}))
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return
+        if path == "/patch-report.json":
+            rep = _load_patch_report()
+            if rep is not None:
+                self._json(200, {"ok": True,
+                                 "generated": rep.get("generated"),
+                                 "endpoints": rep.get("endpoints", [])})
+            else:
+                self._json(200, {"ok": False,
+                                 "error": "no patch report yet"})
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
         # Static files
         if path == "/" or path == "/index.html":
             self._serve_static("index.html")
@@ -1323,6 +1349,11 @@ class _Handler(BaseHTTPRequestHandler):
         # SPA-style routes: serve index.html so the client
         # can render the page.
         if re.match(r"^/(tenants|agents|runs|fleet)/[A-Za-z0-9_.-]+/?$", path):
+            self._serve_static("index.html")
+            self._log("GET", 200, (time.monotonic() - t0) * 1000)
+            return
+        # /patches landing (patch/update/risk report)
+        if path == "/patches":
             self._serve_static("index.html")
             self._log("GET", 200, (time.monotonic() - t0) * 1000)
             return

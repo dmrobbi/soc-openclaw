@@ -390,6 +390,11 @@ def render_report(day: str, audit: List[Dict[str, Any]],
         lines += _table(["Severity", "Count", "Share"], rows)
         lines.append("")
 
+    # Detection report (v3 contract) - deterministic section built from
+    # the day's realtime rows; the module block above carries the rules.
+    lines += render_detection_report(day, realtime_day, realtime)
+    lines.append("")
+
     # Drill-down.
     lines.append("## Drill-down")
     lines.append("")
@@ -425,6 +430,256 @@ def render_report(day: str, audit: List[Dict[str, Any]],
         f"Source: `scripts/soc/soc_daily_decisions.py`_")
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Detection report (v3 contract - wired 2026-10-12, owner-approved)
+#
+# Source contract: agentic-ai docs/PROMPT_EXERCISE_DETECTION_REPORTS.md
+# (the tuned v3 prompt). The daily SOC report gains a deterministic
+# detection-report section built from the day's realtime-soc rows:
+#
+#   - Executive summary: 3 bullets maximum (derived; an empty day says so)
+#   - Detection inventory: one row per detection group
+#   - Top sources: the 3 loudest entries
+#   - Affected accounts and services
+#   - Recommended actions: ticket + blocking candidates only
+#
+# Rules enforced by construction: every group row cites its source
+# (realtime-soc/<rule family>), unknown values render as "unknown"
+# instead of guesses, no IP/count/timestamp is ever invented, no
+# exploit/countermeasure detail, and an unreachable/quiet source is said
+# in the summary rather than guessed around. No extra LLM turn; the
+# section is idempotent like the rest of the report.
+
+_GROUP_TO_SERVICE = {
+    "sshd": "ssh",
+    "authentication_failures": "ssh",
+    "authentication_failed": "ssh",
+    "firewall": "edge/ufw",
+    "ufw": "edge/ufw",
+    "web": "http",
+    "apache": "http",
+}
+
+
+def _rule_fields(r: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """(description, groups) for one realtime row. The embedded
+    full_alert.rule fills gaps; a numeric-only flat rule_description
+    (a rule id) swaps for the embedded prose. Missing stays honest."""
+    full = r.get("full_alert")
+    rule = full.get("rule") if isinstance(full, dict) else None
+    rule = rule if isinstance(rule, dict) else {}
+    desc = str(r.get("rule_description") or "").strip()
+    if desc.isdigit() and rule.get("description"):
+        desc = str(rule.get("description")).strip()
+    groups = rule.get("groups") if isinstance(rule.get("groups"), list) \
+        else []
+    return desc, [str(g) for g in groups]
+
+
+def _category_cite(desc: str, groups: List[str]) -> Tuple[str, str]:
+    """(category, citation) per the v3 vocabulary. The label rides the
+    record's own rule-group family - never the prose, never guessed:
+    a rule whose TEXT merely mentions sshd (e.g. the AIDE monitored-
+    surfaces list) keeps its aide/fim label."""
+    text = (desc + " " + " ".join(groups)).lower()
+    gl = [g.lower() for g in groups]
+    if any(h in text for h in ("invalid user", "invalid_user",
+                               "non-existent user", "nonexistent user")):
+        return "logon-attempt", "realtime-soc/sshd"
+    if any("auth_fail" in g or g in ("sshd", "authentication",
+                                     "authentication_failures",
+                                     "authentication_failed")
+           for g in gl):
+        return "brute-force", "realtime-soc/sshd"
+    if any(g in ("firewall", "ufw") for g in gl):
+        return "service scan", "realtime-soc/ufw"
+    if gl:
+        return "other: " + gl[0], "realtime-soc/" + gl[0]
+    return "other", "realtime-soc/unknown"
+
+
+def _detection_rows(realtime_day: List[Dict[str, Any]]
+                    ) -> List[Dict[str, Any]]:
+    """Collapse the day's realtime rows into detection groups, loudest
+    first: host/category/target with counts, first/last seen + citations."""
+    groups: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for r in realtime_day:
+        desc, gl = _rule_fields(r)
+        full = r.get("full_alert") if isinstance(r.get("full_alert"), dict) \
+            else {}
+        agent = full.get("agent") if isinstance(full.get("agent"), dict) \
+            else {}
+        host = str(r.get("agent_name") or agent.get("name") or "unknown")
+        src = str(r.get("src_ip") or "").strip() or "unknown"
+        sev = str(r.get("severity") or "").strip()
+        cat, cite = _category_cite(desc, gl)
+        target = desc[:80]
+        if not target:
+            target = "rule " + str(r.get("rule_id") or "unknown")
+        if gl:
+            target += " (" + ", ".join(gl[:3]) + ")"
+        key = (host, cat, target)
+        g = groups.setdefault(key, {"count": 0, "first": "", "last": "",
+                                    "sev": "", "rank": 0,
+                                    "src": src, "cite": cite})
+        ts = str(r.get("ts") or "")
+        mm = ts[11:16]
+        g["count"] += 1
+        if mm:
+            if not g["first"]:
+                g["first"] = mm
+            g["last"] = mm
+        if sev:
+            rank = {"low": 1, "medium": 2, "high": 3,
+                    "critical": 4}.get(sev, 0)
+            if rank >= g["rank"]:
+                g["sev"], g["rank"] = sev, rank
+    rows: List[Dict[str, Any]] = []
+    for (host, cat, target), g in groups.items():
+        rows.append({"host": host, "cat": cat, "cite": g["cite"],
+                     "target": target, "count": g["count"],
+                     "first": g["first"], "last": g["last"],
+                     "sev": g["sev"] or "unknown", "src": g["src"]})
+    rows.sort(key=lambda x: (-x["count"], x["host"], x["cat"]))
+    return rows
+
+
+def render_detection_report(day: str,
+                            realtime_day: List[Dict[str, Any]],
+                            realtime_all: List[Dict[str, Any]],
+                            ) -> List[str]:
+    """The v3 detection-report section for one day's rows."""
+    rows = _detection_rows(realtime_day)
+    out: List[str] = []
+    out.append("## Detection report (" + day + ")")
+    out.append("")
+    out.append("_Follows the v3 output contract in agentic-ai "
+               "docs/PROMPT_EXERCISE_DETECTION_REPORTS.md: per-row source "
+               "citations, unknowns marked, nothing invented._")
+    out.append("")
+
+    out.append("### Executive summary")
+    out.append("")
+    bullets: List[str] = []
+    if rows:
+        for r in rows[:2]:
+            span = f", {r['first']}-{r['last']}" if r["first"] else ""
+            bullets.append(
+                f"- {r['cat']} on {r['host']} ({r['target']}): "
+                f"{r['count']} alerts{span}; severity {r['sev']}; "
+                f"source: {r['cite']}.")
+        sevs = sorted({r["sev"] for r in rows if r["sev"] != "unknown"})
+        bullets.append(
+            f"- Window: {len(realtime_day)} alerts in {len(rows)} groups; "
+            f"severities {', '.join(sevs) or 'unknown'}.")
+    elif realtime_all:
+        last_ts = str(realtime_all[-1].get("ts") or "")
+        bullets.append("- No detections in the window.")
+        bullets.append(
+            "- Scope note: the realtime-soc store shows no alerts for "
+            f"{day}; its last stored alert is {last_ts[:19]} - the store "
+            "is treated as unreachable for the window, not guessed.")
+    else:
+        bullets.append(
+            "- No detections in the window; the realtime-soc store is "
+            "empty or missing - sources unreachable, nothing guessed.")
+    out += bullets[:3]
+    out.append("")
+
+    out.append("### Detection inventory")
+    out.append("")
+    if rows:
+        irows = [[
+            (f"{r['first']}-{r['last']}" if r["first"] else "unknown"),
+            r["host"], r["cat"], r["src"], r["target"], r["count"],
+            r["sev"], r["cite"],
+        ] for r in rows]
+        out += _table(["time range", "host", "category", "source ip",
+                       "target", "count", "severity", "source"], irows)
+    else:
+        out.append("_No detection groups in the window._")
+    out.append("")
+
+    out.append("### Top sources")
+    out.append("")
+    if rows:
+        stat: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            name = r["src"] if r["src"] != "unknown" \
+                else "unknown (host " + r["host"] + ")"
+            h = stat.setdefault(name, {"hits": 0, "cats": Counter()})
+            h["hits"] += r["count"]
+            h["cats"][r["cat"]] += r["count"]
+        top = sorted(stat.items(),
+                     key=lambda kv: (-kv[1]["hits"], kv[0]))[:3]
+        srows = [[name, h["hits"],
+                  ", ".join(c for c, _ in h["cats"].most_common(2))]
+                 for name, h in top]
+        out += _table(["origin", "hits", "pattern"], srows)
+    else:
+        out.append("_No origins in the window._")
+    out.append("")
+
+    out.append("### Affected accounts and services")
+    out.append("")
+    users: Counter = Counter()
+    services: Counter = Counter()
+    for r in realtime_day:
+        full = r.get("full_alert") if isinstance(r.get("full_alert"), dict) \
+            else {}
+        data = full.get("data") if isinstance(full.get("data"), dict) \
+            else {}
+        u = str(data.get("dstuser") or data.get("srcuser")
+                or data.get("user") or "").strip()
+        if u:
+            users[u] += 1
+        _, gl = _rule_fields(r)
+        for g in gl:
+            svc = _GROUP_TO_SERVICE.get(g.lower())
+            if svc:
+                services[svc] += 1
+    bits = []
+    if users:
+        bits.append("accounts: "
+                    + ", ".join(u for u, _ in users.most_common(6)))
+    elif realtime_day:
+        bits.append("accounts: unknown (no dstuser fields in the "
+                    "window's rows)")
+    if services:
+        bits.append("services: "
+                    + ", ".join(s for s, _ in services.most_common(6)))
+    out.append("- " + ("; ".join(bits) + "." if bits else
+                       "unknown (the window's rows carry no account/"
+                       "service fields)."))
+    out.append("")
+
+    out.append("### Recommended actions")
+    out.append("")
+    acts: List[str] = []
+    for r in rows:
+        if r["sev"] in ("high", "critical"):
+            acts.append(f"Ticket candidate: {r['cat']} on {r['host']} "
+                        f"({r['count']} alerts; evidence rows above).")
+        if len(acts) >= 4:
+            break
+    blocks = sorted({r["src"] for r in rows if r["src"] != "unknown"})
+    if blocks:
+        acts.append("Blocking candidates: " + ", ".join(blocks[:5])
+                    + " (verify before applying).")
+    else:
+        acts.append("Blocking candidates: unknown (the store carries no "
+                    "origin IPs).")
+    policy = ("Policy: this report stops at tickets and network blocks; "
+              "no exploit or countermeasure detail.")
+    acts.append(policy)
+    for i, a in enumerate(acts[:5], 1):
+        out.append(f"{i}. {a}")
+    if len(acts) > 5:
+        out.append(f"6. {policy}")
+    out.append("")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +911,23 @@ def _smoke() -> int:
          "outcome": "ok", "error": None, "extra": {}, "schema": 1},
     ]
     sample_realtime = [
+        {"ts": "2026-08-08T10:05:00.000+00:00", "type": "alert",
+         "alert_id": "ALERT-S-1", "level": 12, "severity": "high",
+         "rule_id": "5710",
+         "rule_description": "SSHD: brute force trying to get access to "
+         "the system.",
+         "agent_name": "lab-web", "src_ip": "",
+         "full_alert": {
+             "rule": {"level": 12,
+                      "description": "SSHD: brute force trying to get "
+                      "access to the system.",
+                      "id": "5710", "firedtimes": 3, "mail": False,
+                      "groups": ["syslog", "sshd",
+                                 "authentication_failures"]},
+             "agent": {"id": "025", "name": "lab-web",
+                       "ip": "203.0.113.9"},
+             "data": {"dstuser": "root"}},
+         "schema": 1},
         {"ts": "2026-08-08T10:00:30.000+00:00",
          "type": "alert", "title": "A1", "severity": "high",
          "status": "escalated", "source": "wazuh"},
@@ -688,6 +960,12 @@ def _smoke() -> int:
                     "## Notable runs",
                     "## Recent errors",
                     "## Realtime SOC alerts",
+                    "## Detection report (2026-08-08)",
+                    "### Executive summary",
+                    "### Detection inventory",
+                    "### Top sources",
+                    "### Affected accounts and services",
+                    "### Recommended actions",
                     "## Drill-down"):
         assert section in text, f"missing section: {section}\n--- text ---\n{text[:1000]}"
     # Content
@@ -701,6 +979,16 @@ def _smoke() -> int:
     assert "old" not in text.split("## By agent")[1].split("## ")[0], text  # 'old' runId not in by-agent table
     # Recent errors
     assert "openclaw binary not on PATH" in text
+    # Detection report (v3 contract)
+    ss = text.split("### Executive summary")[1].split("### ")[0]
+    nbul = sum(1 for ln in ss.splitlines() if ln.startswith("- "))
+    assert nbul <= 3, f"summary bullets {nbul}"
+    assert "realtime-soc/sshd" in text
+    assert "brute-force" in text
+    assert "source ip" in text
+    assert "unknown (host" in text
+    assert "accounts: root" in text
+    assert "services: ssh." in text
     # Cleanup
     shutil.rmtree(tmp, ignore_errors=True)
     sys.stdout.write("soc-daily-decisions smoke test: OK\n")
