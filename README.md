@@ -260,6 +260,20 @@ message; a SOC that cries wolf every 5 minutes gets muted on day two.
   services -> new expected sockets).
 - Wazuh: follow their upgrade path per release notes.
 
+## Addons
+
+- **Physical-disk (SMART) health monitoring** —
+  [dmrobbi/soc-disk-health](https://github.com/dmrobbi/soc-disk-health):
+  smartd on every bare-metal host (health, error-log, temperature
+  directives + optional nightly short self-tests), manager rules that
+  turn smartd severity messages into SOC alerts, and a nightly producer
+  that trends temperature / percentage_used / critical_warning /
+  media-error growth into the estate's realtime JSONL and posts
+  Wazuh-shaped breach alerts to the ingest server (which is also the
+  alert path for agentless hosts). Thresholds:
+  `critical_warning != 0`, media growth, `percentage_used >= 90`,
+  `temperature >= 65C`.
+
 ---
 
 That is the whole build: hardened host, watched logs, a brain that
