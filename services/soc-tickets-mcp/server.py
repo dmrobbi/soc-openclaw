@@ -121,13 +121,21 @@ ALLOWED_STATUS = ("open", "in_progress", "waiting", "closed")
 # params on list_tickets and via full-text search (search_tickets
 # scans the whole store, archived included). Computed at query time
 # from closed_at — no schema change, no migration, fully reversible.
+# 2026-10-15 (owner follow-up): a stored "archived": true flag wins
+# immediately — used to move the pre-existing closed backlog into the
+# archive area the same day without rewriting history (closed_at
+# preserved); new closures with no flag follow the 30d rule.
 ARCHIVE_AFTER_DAYS = 30
 
 
 def _is_archived(r: Dict[str, Any],
                  now: Optional[dt.datetime] = None) -> bool:
-    """Closed more than ARCHIVE_AFTER_DAYS ago → archived."""
+    """Archived iff the stored flag is set, else closed
+    > ARCHIVE_AFTER_DAYS ago."""
+    if r.get("archived") is True:
+        return True
     if r.get("status") != "closed" or not r.get("closed_at"):
+        return False
         return False
     try:
         ca = dt.datetime.fromisoformat(str(r["closed_at"]))
@@ -551,10 +559,17 @@ def tool_search_tickets(args: Dict[str, Any]) -> Dict[str, Any]:
 
 def tool_update_ticket(args: Dict[str, Any]) -> Dict[str, Any]:
     """update_ticket(ticket_id, status=None, assignee=None,
-    add_comment=None, add_labels=None, remove_labels=None)
+    add_comment=None, add_labels=None, remove_labels=None,
+    archived=None)
     -> {ok, ticket}. All fields except ticket_id are optional;
     only the ones provided are mutated. Setting status='closed'
-    also sets closed_at."""
+    also sets closed_at.
+    2026-10-15: archived (bool) — True moves a CLOSED ticket to the
+    archive area immediately (stored flag; overrides the 30d rule
+    which still ages unflagged closures automatically); False
+    un-archives. archive-only calls are permitted on closed tickets
+    without reopening (status/add_comment etc. still require the
+    reopen dance)."""
     _require_writes_enabled()
     tid = args.get("ticket_id")
     if not tid:
@@ -562,7 +577,24 @@ def tool_update_ticket(args: Dict[str, Any]) -> Dict[str, Any]:
     _validate_field(tid, label="ticket_id", max_len=32, pattern=_ID_RE)
     records = _load_all()
     idx, t = _find_by_id(records, tid)
-    if t.get("status") == "closed":
+    # 2026-10-15: parse the archived flag first; archive-only calls
+    # skip the closed-refusal below (that refusal is about reopen/
+    # content edits, not archive moves).
+    want_archived = args.get("archived")
+    if want_archived is not None and not isinstance(want_archived, bool):
+        raise ValueError("archived must be a boolean")
+    if want_archived is True and not (
+            t.get("status") == "closed"
+            or args.get("status") == "closed"):
+        raise ValueError(
+            "archived=True is only valid on closed tickets "
+            "(pass status='closed' in the same call if intended)")
+    mutating_others = any(
+        args.get(k) is not None
+        for k in ("status", "assignee", "add_comment",
+                  "add_labels", "remove_labels"))
+    if t.get("status") == "closed" and (
+            want_archived is None or mutating_others):
         raise ValueError(
             f"ticket {tid} is closed; reopen by setting status='open' "
             f"first, then update")
@@ -625,6 +657,13 @@ def tool_update_ticket(args: Dict[str, Any]) -> Dict[str, Any]:
         t["status"] = new_status
         if new_status == "closed" and not t.get("closed_at"):
             t["closed_at"] = _now_iso()
+    if want_archived is not None:
+        t["archived"] = want_archived
+        if want_archived:
+            if t.get("status") != "closed":
+                t["status"] = "closed"
+            if not t.get("closed_at"):
+                t["closed_at"] = _now_iso()
     t["updated_at"] = _now_iso()
     records[idx] = t
     _atomic_write(records)

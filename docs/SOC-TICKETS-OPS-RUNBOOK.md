@@ -165,6 +165,23 @@ Found while verifying the flood fix; three stacked issues:
     (incl. archived), results carry status badges.
   - The open view also shows: open total, open-created-24h,
     closed <30d, archived >30d counts (from `tickets_stats`).
+
+- **Stored `archived` flag (owner follow-up, 2026-10-15):**
+  - `_is_archived` = stored flag **OR** the >30d computation. The
+    flag lets an operator move closed tickets into the archive
+    immediately without rewriting closure history:
+    `update_ticket {ticket_id, archived: true}` (only on closed
+    tickets; archive-only calls skip the closed-reopen refusal;
+    `archived: false` un-archives).
+  - Record: same day, **all 10,933 pre-existing closed tickets were
+    flagged archived** per owner instruction ("move all closed
+    tickets now to the archived area; new ones follow the 30d
+    rule") — single atomic store rewrite; per-ticket comment marks
+    the move; backup `soc_tickets.jsonl.bak-20261015-pre-archive`.
+    Verified after: stats = 5 open / 0 closed<30d / 10,933 archived.
+  - Going forward: new closures get NO flag and age into the
+    archive exactly when closed_at passes the 30-day line — the
+    30d rule handles it with no maintenance.
 - **Overview counts are open-centric:** `/tools/overview` now
   returns `tickets_stats` (open_total, open_by_severity,
   open_created_24h, closed_recent_30d, archived_total) and
@@ -285,6 +302,16 @@ Found while verifying the flood fix; three stacked issues:
 | STIG catalogue mount | repo `config/stig-rules` → container `/usr/local/stig-rules` |
 
 ## 7. Open items for wez (the real remaining work)
+
+0. **/opt/soc-openclaw upstream push is blocked (needs wez/Dawn):**
+   the local main (commits 7c30487 + the Sep-29 production-state
+   dumps) diverged 6↔157 from the GitLab main — the remote was
+   scrubbed/rewritten ("scrub: internal hostnames … to role labels"
+   + reconcile merge). Do NOT force-push: the fix is to cherry-pick
+   the repair commit onto the post-scrub main and re-scrub the touched
+   files. The code is deployed + running regardless; stsgym-work
+   (the integration-script repo) IS pushed
+   (cce8a618 on feat/soc-phase5-curator).
 
 1. **The 5 kept tickets** (§4 table): kernel-CVE watch ×4 (incl. the
    CVSS-9.8 network kernel CVE with no fix released) + the NVMe
