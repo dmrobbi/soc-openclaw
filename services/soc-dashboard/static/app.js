@@ -861,11 +861,26 @@
 
     const nodes = [];
     nodes.push(el("h1", null, "Overview — last 24h"));
+    const tstats = data.tickets_stats || {};
+    const openBySev = tstats.open_by_severity || {};
+    // 2026-10-15: overview counts are OPEN-centric (owner request).
+    // The audit row stays last-24h event stats; ticket cards now
+    // reflect open backlog only, with the >30d archive as its own
+    // number. Closed <30d are one click away on /tickets.
     nodes.push(el("div", { class: "cards" },
       card("Total", stats.total || 0, ""),
       card("OK", byOut.ok || 0, "ok"),
       card("Errors", byOut.error || 0, "bad"),
-      card("Tickets", data.ticket_total || 0, "info"),
+      card("Open tickets", tstats.open_total || 0, "info"),
+      card("Archived >30d", tstats.archived_total || 0, ""),
+    ));
+    nodes.push(el("div", { class: "cards" },
+      card("Open critical", openBySev.critical || 0,
+           openBySev.critical ? "bad" : ""),
+      card("Open high", openBySev.high || 0,
+           openBySev.high ? "bad" : ""),
+      card("Open medium", openBySev.medium || 0, "info"),
+      card("Open low", openBySev.low || 0, ""),
     ));
     nodes.push(el("div", { class: "section" },
       el("h2", null,
@@ -1020,6 +1035,10 @@
   }
 
   async function pageRun(runId) {
+    // 2026-10-15: TKT-… ids are ticket ids, not audit run ids. Old
+    // ticketsList links sent them here; route them to the real
+    // ticket page instead of failing in C4 get_run.
+    if (/^TKT-/i.test(runId)) return pageTicket(runId);
     let data;
     try { data = await api("/tools/run_view", "POST",
                            { run_id: runId }); }
@@ -1304,17 +1323,157 @@
     );
   }
 
+  // 2026-10-15: tickets page state (filter + search) lives here so
+  // re-renders within the page keep it.
+  let ticketFilter = "open";
+  let ticketQuery = "";
+
   async function pageTickets() {
-    let data;
-    try { data = await api("/tools/tickets_list_proxy", "POST",
-                           { limit: 100 }); }
-    catch (e) { return errorView(e); }
-    return [
+    const sel = el("select");
+    for (const opt of [
+      ["open", "Open (default)"],
+      ["in_progress", "In progress"],
+      ["waiting", "Waiting"],
+      ["closed", "Closed (last 30d)"],
+      ["archived", "Archived (closed >30d)"],
+      ["all", "All (incl. archived)"],
+    ]) sel.appendChild(el("option", { value: opt[0] }, opt[1]));
+    sel.value = ticketFilter;
+    const inp = el("input", { type: "search",
+      placeholder: "Search all tickets (title/body/labels, incl. archived) — Enter to search",
+      style: "margin-left:12px; min-width:320px" });
+    inp.value = ticketQuery;
+    const out = el("div", { class: "section" });
+    const nodes = [
       el("h1", null, "Tickets"),
       el("div", { class: "section" },
-        el("h2", null, "Total: " + (data.total || 0)),
-        ticketsList(data.tickets || []),
+        el("h2", null, "View / search"),
+        el("p", null, sel, inp)),
+      out,
+    ];
+    let statsData = null;
+    try { statsData = await api("/tools/tickets_stats_proxy", "POST", {}); }
+    catch (e) { statsData = null; }
+
+    async function loadList() {
+      clear(out);
+      out.appendChild(el("p", { class: "muted" }, "Loading…"));
+      try {
+        let data;
+        const q = ticketQuery.trim();
+        if (q) {
+          data = await api("/tools/tickets_search_proxy", "POST",
+            { q: q, limit: 100 });
+        } else if (ticketFilter === "archived") {
+          data = await api("/tools/tickets_list_proxy", "POST",
+            { archived: "only", limit: 100 });
+        } else if (ticketFilter === "all") {
+          data = await api("/tools/tickets_list_proxy", "POST",
+            { archived: "all", limit: 100 });
+        } else {
+          data = await api("/tools/tickets_list_proxy", "POST",
+            { status: ticketFilter, limit: 100 });
+        }
+        clear(out);
+        const rows = (data && data.tickets) || [];
+        if (q && data && data.total != null)
+          out.appendChild(el("p", { class: "muted" },
+            "matched " + data.total + " — showing " + rows.length));
+        else
+          out.appendChild(el("h2", null,
+            "View: " + ticketFilter + " — showing " + rows.length));
+        if (!q && ticketFilter === "open" && statsData && statsData.ok) {
+          const s = statsData;
+          out.appendChild(el("p", { class: "muted" },
+            "open total: " + (s.open_total || 0) +
+            " · created 24h (still open): " + (s.open_created_24h || 0) +
+            " · closed <30d: " + (s.closed_recent_30d || 0) +
+            " · archived >30d: " + (s.archived_total || 0)));
+          if ((s.archived_total || 0) > 0)
+            out.appendChild(el("p", { class: "muted" },
+              "Archived tickets are outside this view — use the " +
+              "Archived filter or Search to reach them."));
+        }
+        out.appendChild(ticketsList(rows));
+      } catch (e) {
+        clear(out);
+        errorView(e).forEach(n => out.appendChild(n));
+      }
+    }
+    sel.onchange = () => { ticketFilter = sel.value; ticketQuery = "";
+      inp.value = ""; loadList(); };
+    inp.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ticketQuery = inp.value; loadList();
+      }});
+    await loadList();
+    return nodes;
+  }
+
+  async function pageTicket(ticketId) {
+    // 2026-10-15: real ticket detail view. Tickets created from
+    // alerts carry no audit run; those show a muted note instead
+    // of a run link. Linked runs still deep-link into C4.
+    let data;
+    try { data = await api("/tools/get_ticket_proxy", "POST",
+                           { ticket_id: ticketId }); }
+    catch (e) { return errorView(e); }
+    const t = data && data.ok && (data.ticket || null);
+    if (!t) {
+      return [el("h1", null, "Ticket: ", el("code", null, ticketId)),
+              el("p", { class: "alert bad" },
+                 "Ticket not found in the ticket store (C3): ",
+                 (data && data.error) || "?"),
+              el("p", null, el("a", { href: "/tickets", "data-link": "" },
+                 "← back to tickets"))];
+    }
+    const run = t.source_run_id
+      ? el("a", { href: "/runs/" + encodeURIComponent(t.source_run_id), "data-link": "" },
+          "View run ", el("code", null, t.source_run_id), " in the C4 audit log")
+      : el("span", { class: "muted" },
+          "No linked audit run ",
+          el("span", { class: "muted" },
+            "(alert-created ticket — see alert ref; run linkage is carried by tickets created after 2026-10-15)."));
+    const comments = t.comments || [];
+    return [
+      el("h1", null, "Ticket ", el("code", null, t.id)),
+      el("p", null,
+        badge(t.severity || "?"), " ", badge(t.status || "?"),
+        t.assignee ? el("span", { class: "muted" },
+          " · @" + t.assignee) : null),
+      el("p", null, run),
+      el("div", { class: "kv" },
+        el("div", { class: "k" }, "severity"),
+          el("div", null, badge(t.severity || "?")),
+        el("div", { class: "k" }, "status"),
+          el("div", null, badge(t.status || "?")),
+        el("div", { class: "k" }, "assignee"),
+          el("div", null, t.assignee || "-"),
+        el("div", { class: "k" }, "labels"),
+          el("div", null, (t.labels || []).join(", ") || "-"),
+        el("div", { class: "k" }, "alert ref"),
+          el("div", null, t.source_alert_ref || "-"),
+        el("div", { class: "k" }, "created"),
+          el("div", null, fmtTime(t.created_at)),
+        el("div", { class: "k" }, "updated"),
+          el("div", null, fmtTime(t.updated_at)),
+        el("div", { class: "k" }, "closed"),
+          el("div", null, t.closed_at ? fmtTime(t.closed_at) : "-"),
       ),
+      el("div", { class: "section" },
+        el("h2", null, "Body"),
+        el("pre", null, esc(t.body || "(empty)"))),
+      el("div", { class: "section" },
+        el("h2", null, "Comments (" + String(comments.length) + ")"),
+        comments.length
+          ? el("ul", { class: "list" },
+              ...comments.map(c => el("li", null,
+                el("strong", null, c.author || "system", ": "),
+                c.body || "",
+                el("span", { class: "muted" }, " (" + fmtTime(c.ts) + ")"))))
+          : el("p", { class: "muted" }, "No comments yet.")),
+      el("p", null, el("a", { href: "/tickets", "data-link": "" },
+         "← back to tickets")),
     ];
   }
 
@@ -1646,7 +1805,11 @@
     if (!rows.length) return el("p", { class: "empty" }, "No tickets.");
     return el("ul", { class: "list" },
       ...rows.map(t => el("li", null,
-        el("a", { href: "/runs/" + encodeURIComponent(t.source_run_id || t.id || ""), "data-link": "" },
+        // 2026-10-15: link to the ticket detail page. The old
+        // fallback to /runs/<ticket_id> made every alert-created
+        // ticket (no source_run_id) surface C4's
+        // "run_id not found: TKT-..." error on click.
+        el("a", { href: "/tickets/" + encodeURIComponent(t.id || ""), "data-link": "" },
           t.id + " · " + t.title),
         " ", badge(t.severity), " ", badge(t.status),
         t.assignee ? el("span", { class: "muted" }, " · @" + t.assignee) : null,
@@ -1828,12 +1991,13 @@
     } else if (path === "/healthz") {
       nodes = await pageHealth();
     } else {
-      const m = path.match(/^\/(tenants|agents|runs)\/([^/]+)$/);
+      const m = path.match(/^\/(tenants|agents|runs|tickets)\/([^/]+)$/);
       if (m) {
         const kind = m[1], id = decodeURIComponent(m[2]);
         if (kind === "tenants") nodes = await pageTenant(id);
         else if (kind === "agents") nodes = await pageAgent(id);
         else if (kind === "runs") nodes = await pageRun(id);
+        else if (kind === "tickets") nodes = await pageTicket(id);
       }
       if (!m) {
         const sm = path.match(/^\/scores\/([^/]+)$/);

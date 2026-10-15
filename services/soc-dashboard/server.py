@@ -85,7 +85,8 @@ MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
 DASHBOARD_TOOLS = (
     "overview", "tenant_view", "agent_view", "run_view",
-    "audit_stats_proxy", "tickets_list_proxy",
+    "audit_stats_proxy", "tickets_list_proxy", "get_ticket_proxy",
+    "tickets_search_proxy", "tickets_stats_proxy",
     "compliance_score", "compliance_scores_all",
     "fleet_status", "fleet_summary",
     "stig_overview", "stig_findings",
@@ -194,23 +195,29 @@ def _load_routing_tenants() -> Optional[Dict[str, Any]]:
 # Tools (the dashboard's own MCP-style tool surface)
 # ---------------------------------------------------------------------------
 def tool_overview(args: Dict[str, Any]) -> Dict[str, Any]:
-    """overview() -> aggregated last-24h stats from C4 + C3."""
+    """overview() -> aggregated last-24h stats from C4 + C3.
+
+    2026-10-15: all ticket counts are OPEN-centric (owner
+    requirement) via C3 tickets_stats; tickets_recent lists OPEN
+    tickets only (status=open query)."""
     c4 = os.environ.get("SOC_DASHBOARD_C4_URL", DEFAULT_C4_URL)
     c3 = os.environ.get("SOC_DASHBOARD_C3_URL", DEFAULT_C3_URL)
     # C4 audit_stats for the last 24h
     _, stats = _http_post(f"{c4}/tools/audit_stats",
                           {"time_range": "24h"})
-    # C3 ticket list (any status)
+    # C3 open tickets only (recent queue)
     _, tix = _http_post(f"{c3}/tools/list_tickets",
-                        {"limit": 50})
+                        {"status": "open", "limit": 50})
+    # C3 open-centric aggregate counts
+    _, tstats = _http_post(f"{c3}/tools/tickets_stats", {})
     return {
         "ok": True,
         "tool": "overview",
         "audit_24h": stats if isinstance(stats, dict) else {},
         "tickets_recent": (tix.get("tickets", [])
                            if isinstance(tix, dict) else []),
-        "ticket_total": (tix.get("total", 0)
-                         if isinstance(tix, dict) else 0),
+        "tickets_stats": (tstats if isinstance(tstats, dict)
+                          and tstats.get("ok") else {}),
     }
 
 
@@ -472,6 +479,48 @@ def tool_tickets_list_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
     """tickets_list_proxy(...) -> raw pass-through to C3."""
     c3 = os.environ.get("SOC_DASHBOARD_C3_URL", DEFAULT_C3_URL)
     _, body = _http_post(f"{c3}/tools/list_tickets", args or {})
+    return body if isinstance(body, dict) else {
+        "ok": False, "error": f"unexpected C3 response: {body!r}"}
+
+
+def tool_get_ticket_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
+    """get_ticket_proxy(ticket_id) -> raw pass-through to C3.
+
+    2026-10-15: added so ticket rows can open a real ticket detail
+    page (/tickets/<id>). Alert-created tickets carry no
+    source_run_id; ticketsList used to link them to
+    /runs/<ticket_id>, which made the UI call C4 get_run with a
+    ticket id and render the misleading "Not found in the C4 audit
+    log" error for every alert-generated ticket. This proxy keeps
+    the dashboard read-only: it only forwards to C3 get_ticket.
+    """
+    c3 = os.environ.get("SOC_DASHBOARD_C3_URL", DEFAULT_C3_URL)
+    _, body = _http_post(f"{c3}/tools/get_ticket", args or {})
+    return body if isinstance(body, dict) else {
+        "ok": False, "error": f"unexpected C3 response: {body!r}"}
+
+
+def tool_tickets_search_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
+    """tickets_search_proxy(q, limit) -> raw pass-through to C3.
+
+    2026-10-15: full-text search over ALL tickets (title, body,
+    labels) — archived tickets included, so closed/archived work
+    stays findable from the tickets page (owner requirement).
+    """
+    c3 = os.environ.get("SOC_DASHBOARD_C3_URL", DEFAULT_C3_URL)
+    _, body = _http_post(f"{c3}/tools/search_tickets", args or {})
+    return body if isinstance(body, dict) else {
+        "ok": False, "error": f"unexpected C3 response: {body!r}"}
+
+
+def tool_tickets_stats_proxy(args: Dict[str, Any]) -> Dict[str, Any]:
+    """tickets_stats_proxy() -> raw pass-through to C3.
+
+    2026-10-15: open-centric aggregate counts for the overview
+    (owner requirement: overview counts are about open tickets).
+    """
+    c3 = os.environ.get("SOC_DASHBOARD_C3_URL", DEFAULT_C3_URL)
+    _, body = _http_post(f"{c3}/tools/tickets_stats", args or {})
     return body if isinstance(body, dict) else {
         "ok": False, "error": f"unexpected C3 response: {body!r}"}
 
@@ -1481,6 +1530,9 @@ class _Handler(BaseHTTPRequestHandler):
             "run_view": tool_run_view,
             "audit_stats_proxy": tool_audit_stats_proxy,
             "tickets_list_proxy": tool_tickets_list_proxy,
+            "get_ticket_proxy": tool_get_ticket_proxy,
+            "tickets_search_proxy": tool_tickets_search_proxy,
+            "tickets_stats_proxy": tool_tickets_stats_proxy,
             "compliance_score": tool_compliance_score,
             "compliance_scores_all": tool_compliance_scores_all,
             "fleet_status": tool_fleet_status,

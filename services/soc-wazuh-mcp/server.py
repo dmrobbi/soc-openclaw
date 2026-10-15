@@ -242,7 +242,8 @@ def tool_get_rule_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
         "size": 5,
         "sort": [{"timestamp": {"order": "desc"}}],
         "_source": ["timestamp", "agent.id", "agent.name", "agent.ip",
-                    "data.srcip"],
+                    "data.srcip", "rule.id", "rule.level",
+                    "rule.description"],
         "query": {"term": {"rule.id": int(rid)}},
     }
     hits = _post_search(body).get("hits", {}).get("hits", [])
@@ -261,7 +262,12 @@ def tool_get_rule_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
         },
         "aggs": {
             "by_agent": {
-                "terms": {"field": "agent.name", "size": 20}
+                # 2026-10-15: agent.name is a TEXT field — the raw text
+                # agg fails with "Text fields are not optimised for
+                # operations that require per-document field data
+                # (fielddata)... use a keyword field instead". The
+                # .keyword subfield carries the doc_values-backed copy.
+                "terms": {"field": "agent.name.keyword", "size": 20}
             }
         },
     }

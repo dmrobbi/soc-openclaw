@@ -107,12 +107,36 @@ TOOLS = (
     "search_tickets",
     "update_ticket",
     "close_ticket",
+    "tickets_stats",
 )
 
 # Allowed severities and statuses. Keep these tight so the
 # downstream mailcow adapter has a stable contract.
 ALLOWED_SEVERITY = ("low", "medium", "high", "critical")
 ALLOWED_STATUS = ("open", "in_progress", "waiting", "closed")
+
+# 2026-10-15: archive semantics (owner requirement). A closed ticket
+# older than ARCHIVE_AFTER_DAYS is ARCHIVED: excluded from default
+# listings and counts, still reachable via archived="only"/"all"
+# params on list_tickets and via full-text search (search_tickets
+# scans the whole store, archived included). Computed at query time
+# from closed_at — no schema change, no migration, fully reversible.
+ARCHIVE_AFTER_DAYS = 30
+
+
+def _is_archived(r: Dict[str, Any],
+                 now: Optional[dt.datetime] = None) -> bool:
+    """Closed more than ARCHIVE_AFTER_DAYS ago → archived."""
+    if r.get("status") != "closed" or not r.get("closed_at"):
+        return False
+    try:
+        ca = dt.datetime.fromisoformat(str(r["closed_at"]))
+    except (ValueError, TypeError):
+        return False
+    if ca.tzinfo is None:
+        ca = ca.replace(tzinfo=dt.timezone.utc)
+    now = now or dt.datetime.now(dt.timezone.utc)
+    return (now - ca) > dt.timedelta(days=ARCHIVE_AFTER_DAYS)
 
 # Length caps — a real ticket system will have its own, but we
 # bound everything so a runaway agent can't write 1 GB.
@@ -124,9 +148,21 @@ LABEL_MAX = 64
 LABELS_MAX_COUNT = 16
 COMMENTS_MAX = 64
 
+# Verification-tier provenance (schema 2, added 2026-10-15 from
+# laya/docs/laya-verification-tiers.md — "decided-by tier + evidence ids"
+# must attach to completed work): optional, additive, v1-absent = keys
+# absent.
+DECIDED_BY_MAX = 32
+EVIDENCE_MAX_ENTRIES = 8
+EVIDENCE_KEY_MAX = 32
+EVIDENCE_VALUE_MAX = 128
+
 _ID_RE = re.compile(r"^TKT-\d{8}-\d{1,6}$")
 _ASSIGNEE_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 _LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_DECIDED_BY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,31}$")
+_EVIDENCE_KEY_RE = re.compile(r"^[a-z_]{1,32}$")
+_EVIDENCE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/+-]{1,128}$")
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +318,32 @@ def tool_create_ticket(args: Dict[str, Any]) -> Dict[str, Any]:
     if source_run_id and len(source_run_id) > 128:
         raise ValueError("source_run_id exceeds 128 chars")
 
+    # Verification-tier provenance (schema 2, additive/optional):
+    # decided_by = the tier label that produced/decided the ticket;
+    # evidence = structured ids backing the claim (alert/rule/agent/probe).
+    decided_by = args.get("decided_by")
+    if decided_by is not None:
+        decided_by = _validate_field(
+            decided_by, label="decided_by", max_len=DECIDED_BY_MAX,
+            pattern=_DECIDED_BY_RE)
+    evidence = args.get("evidence")
+    if evidence is not None:
+        if not isinstance(evidence, dict):
+            raise ValueError("evidence must be a dict of string ids")
+        if len(evidence) > EVIDENCE_MAX_ENTRIES:
+            raise ValueError(
+                f"too many evidence entries "
+                f"(max {EVIDENCE_MAX_ENTRIES}, got {len(evidence)})")
+        evidence = {
+            _validate_field(k, label="evidence key",
+                            max_len=EVIDENCE_KEY_MAX,
+                            pattern=_EVIDENCE_KEY_RE):
+            _validate_field(str(v), label="evidence value",
+                            max_len=EVIDENCE_VALUE_MAX,
+                            pattern=_EVIDENCE_VALUE_RE)
+            for k, v in evidence.items()
+        }
+
     records = _load_all()
     tid = _next_id(records)
     ticket = {
@@ -298,8 +360,12 @@ def tool_create_ticket(args: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
         "closed_at": None,
-        "schema": 1,
+        "schema": 2,
     }
+    if decided_by is not None:
+        ticket["decided_by"] = decided_by
+    if evidence is not None:
+        ticket["evidence"] = evidence
     records.append(ticket)
     _atomic_write(records)
     return {"ok": True, "tool": "create_ticket", "ticket": ticket}
@@ -318,13 +384,21 @@ def tool_get_ticket(args: Dict[str, Any]) -> Dict[str, Any]:
 
 def tool_list_tickets(args: Dict[str, Any]) -> Dict[str, Any]:
     """list_tickets(status=None, severity=None, assignee=None,
-                   source_run_id=None, limit=100, offset=0)
+                   source_run_id=None, source_alert_ref=None,
+                   limit=100, offset=0)
     -> sorted by created_at DESC.
 
     2026-08-14: added source_run_id filter so the SOC dashboard
     can render tickets linked to a given run on the per-run
     detail page. Validation mirrors create_ticket's source_run_id
     rules (str, ≤128 chars).
+
+    2026-10-15: added source_alert_ref filter so the wazuh
+    integration (agentic-soc-send::maybe_create_ticket) can dedup
+    repeat firings — fold into the newest OPEN ticket for the same
+    alert ref instead of creating one duplicate per event
+    (pre-repair flood: ~10.9k duplicate tickets; see
+    docs/soc/SOC-TICKETS-OPS-RUNBOOK.md).
     """
     status = args.get("status")
     if status is not None and status not in ALLOWED_STATUS:
@@ -349,10 +423,24 @@ def tool_list_tickets(args: Dict[str, Any]) -> Dict[str, Any]:
             # silently match everything). Easy to get this
             # wrong from JS without a guard.
             source_run_id = None
+    source_alert_ref = args.get("source_alert_ref")
+    if source_alert_ref is not None:
+        if not isinstance(source_alert_ref, str):
+            raise ValueError("source_alert_ref must be a string")
+        if len(source_alert_ref) > 256:
+            raise ValueError("source_alert_ref exceeds 256 chars")
+        if not source_alert_ref:
+            # Same empty-string-means-omitted rule as source_run_id.
+            source_alert_ref = None
+    archived = args.get("archived")
+    if archived is not None and archived not in ("only", "all"):
+        raise ValueError("bad archived: use 'only' or 'all'")
     limit = min(int(args.get("limit") or 100), 1000)
     offset = max(int(args.get("offset") or 0), 0)
 
     records = _load_all()
+    now = dt.datetime.now(dt.timezone.utc)
+    archived_total = sum(1 for r in records if _is_archived(r, now))
     out = []
     for r in records:
         if status and r.get("status") != status:
@@ -363,6 +451,13 @@ def tool_list_tickets(args: Dict[str, Any]) -> Dict[str, Any]:
             continue
         if source_run_id and r.get("source_run_id") != source_run_id:
             continue
+        if source_alert_ref and r.get("source_alert_ref") != source_alert_ref:
+            continue
+        arc = _is_archived(r, now)
+        if archived == "only" and not arc:
+            continue
+        if archived is None and arc:
+            continue
         out.append(r)
     out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     page = out[offset:offset + limit]
@@ -371,11 +466,56 @@ def tool_list_tickets(args: Dict[str, Any]) -> Dict[str, Any]:
         "tool": "list_tickets",
         "params": {"status": status, "severity": severity,
                    "assignee": assignee, "source_run_id": source_run_id,
+                   "source_alert_ref": source_alert_ref,
+                   "archived": archived,
                    "limit": limit, "offset": offset},
         "total": len(out),
         "offset": offset,
         "limit": limit,
+        "archived_total": archived_total,
+        "archive_after_days": ARCHIVE_AFTER_DAYS,
         "tickets": [_ticket_summary(t) for t in page],
+    }
+
+
+def tool_tickets_stats(args: Dict[str, Any]) -> Dict[str, Any]:
+    """tickets_stats() -> {ok, open_total, open_by_severity,
+    open_created_24h, closed_recent_30d, archived_total,
+    archive_after_days}.
+
+    2026-10-15: added for the SOC dashboard overview so every
+    ticket count reflects OPEN tickets (owner requirement) and the
+    >30d-closed archive is surfaced as its own number (computed
+    per ARCHIVE_AFTER_DAYS — see _is_archived)."""
+    records = _load_all()
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff24 = (now - dt.timedelta(hours=24)).isoformat()
+    open_total = 0
+    open_by_sev: Dict[str, int] = {}
+    open_created_24h = 0
+    closed_recent = 0
+    archived_total = 0
+    for r in records:
+        if _is_archived(r, now):
+            archived_total += 1
+            continue
+        if r.get("status") == "closed":
+            closed_recent += 1
+            continue
+        open_total += 1
+        sev = r.get("severity") or "medium"
+        open_by_sev[sev] = open_by_sev.get(sev, 0) + 1
+        if (r.get("created_at") or "") >= cutoff24:
+            open_created_24h += 1
+    return {
+        "ok": True,
+        "tool": "tickets_stats",
+        "open_total": open_total,
+        "open_by_severity": open_by_sev,
+        "open_created_24h": open_created_24h,
+        "closed_recent_30d": closed_recent,
+        "archived_total": archived_total,
+        "archive_after_days": ARCHIVE_AFTER_DAYS,
     }
 
 
@@ -594,6 +734,7 @@ class _Handler(BaseHTTPRequestHandler):
             "search_tickets": tool_search_tickets,
             "update_ticket": tool_update_ticket,
             "close_ticket": tool_close_ticket,
+            "tickets_stats": tool_tickets_stats,
         }[tool]
         try:
             result = impl(args)
@@ -695,6 +836,12 @@ def _smoke() -> int:
                 "severity": "high",
                 "assignee": "wez",
                 "labels": ["bruteforce", "ssh"],
+                "decided_by": "tier2-screen+det-sev",
+                "evidence": {
+                    "alert_id": "1791962585.18708806",
+                    "rule_id": "40112",
+                    "agent": "darth",
+                },
             }).encode(),
             method="POST"), timeout=2) as r:
         body = json.loads(r.read())
@@ -706,7 +853,9 @@ def _smoke() -> int:
         assert body["ticket"]["assignee"] == "wez"
         assert body["ticket"]["labels"] == ["bruteforce", "ssh"]
         assert body["ticket"]["comments"] == []
-        assert body["ticket"]["schema"] == 1
+        assert body["ticket"]["schema"] >= 1
+        assert body["ticket"]["decided_by"] == "tier2-screen+det-sev"
+        assert body["ticket"]["evidence"]["rule_id"] == "40112"
 
     # create_ticket (TKT-2)
     with ur.urlopen(ur.Request(
