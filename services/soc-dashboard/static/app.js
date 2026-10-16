@@ -1678,8 +1678,114 @@
     return el("table", { class: "tktable" },
       el("thead", null, el("tr", null,
         ...cols.map(([k, l]) => el("th", null, l)))),
-      el("tbody", null, ...rows.map(r => el("tr", null,
-        ...cols.map(([k]) => tkCell(r, k))))));
+      el("tbody", null, ...rows.map(r => tkRow(r, cols))));
+  }
+  // 2026-10-15 (rev 3, owner request): the whole row is the select
+  // surface. Click — or Enter/Space on a focused row — expands an inline
+  // detail drawer for that ticket: full body, labels, alert ref, latest
+  // comments, and a link to the dedicated /tickets/<id> page. Anchors
+  // keep their own routing; text-selection and modifier clicks stay
+  // native; open detail fetches are cached per session.
+  const tkTk = {};            // tid -> fetched detail (session cache)
+  function tkNav(tid) {
+    const a = document.createElement("a");
+    a.setAttribute("href", "/tickets/" + encodeURIComponent(tid));
+    a.setAttribute("data-link", "");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  function tkRow(r, cols) {
+    const tr = el("tr", { class: "tkrow", tabindex: "0" });
+    cols.forEach(([k]) => tr.appendChild(tkCell(r, k)));
+    const toggle = ev => {
+      if (ev.type === "keydown" &&
+          !(ev.key === "Enter" || ev.key === " ")) return;
+      if (ev.target && ev.target.closest && ev.target.closest("a")) return;
+      if (ev.type === "click") {
+        if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+        const s = (typeof window.getSelection === "function")
+          ? window.getSelection() : null;
+        if (s && String(s.toString()).length) return;
+      }
+      ev.stopPropagation();
+      tkToggleDrawer(tr, r);
+    };
+    tr.addEventListener("click", toggle);
+    tr.addEventListener("keydown", toggle);
+    return tr;
+  }
+  function tkToggleDrawer(tr, r) {
+    if (tr.dataset.open === "1") {
+      const d = tr.nextElementSibling;
+      if (d && d.classList.contains("tkexpandrow")) d.remove();
+      tr.dataset.open = "";
+      tr.classList.remove("tksel");
+      return;
+    }
+    tkClosePopups();
+    tr.dataset.open = "1";
+    tr.classList.add("tksel");
+    const tid = r.id || "";
+    const drawer = el("div", { class: "tkdrawer" });
+    drawer.appendChild(el("p", { class: "muted" },
+      tid + ": loading detail…"));
+    const drow = el("tr", { class: "tkexpandrow" },
+      el("td", { colspan: String(tr.children.length) }, drawer));
+    tr.after(drow);
+    tkDrawerFill(drawer, r, tid);
+  }
+  async function tkDrawerFill(drawer, r, tid) {
+    try {
+      if (!tkTk[tid]) {
+        const data = await api("/tools/get_ticket_proxy", "POST",
+          { ticket_id: tid });
+        tkTk[tid] = (data && data.ok && data.ticket) || null;
+      }
+      const t = tkTk[tid];
+      clear(drawer);
+      if (!t) {
+        drawer.appendChild(el("p", { class: "muted" },
+          tid + ": ticket not found in the store"));
+        return;
+      }
+      const head = el("div", { class: "tkdrawerhead" },
+        badge(t.severity || "?"), badge(tkKind(t)), " ",
+        el("span", { class: "muted" }, "@" + (t.assignee || "-")), " ",
+        el("a", { href: "/tickets/" + encodeURIComponent(tid),
+          "data-link": "" }, "full page →"));
+      drawer.appendChild(head);
+      const meta = el("p", { class: "muted" });
+      meta.appendChild(document.createTextNode(
+        "labels: " + ((t.labels || []).join(", ") || "-") +
+        " · alert ref: " + (t.source_alert_ref || "-")));
+      if (t.source_run_id) {
+        meta.appendChild(document.createTextNode(" · run: "));
+        meta.appendChild(el("a", {
+          href: "/runs/" + encodeURIComponent(t.source_run_id),
+          "data-link": "" }, t.source_run_id));
+      }
+      drawer.appendChild(meta);
+      drawer.appendChild(el("div", { class: "tkdrawerbody" },
+        el("pre", null, esc(String(t.body || "(empty body)")))));
+      const comments = t.comments || [];
+      if (comments.length) {
+        const ul = el("ul", { class: "list tkdrawercomments" });
+        comments.slice(0, 5).forEach(c => ul.appendChild(el("li", null,
+          el("strong", null, c.author || "system", ": "),
+          c.body || "",
+          el("span", { class: "muted" }, " (" + fmtTime(c.ts) + ")"))));
+        drawer.appendChild(ul);
+        if (comments.length > 5)
+          drawer.appendChild(el("p", { class: "muted" },
+            "+" + (comments.length - 5) +
+            " more comments on the full page"));
+      }
+    } catch (e) {
+      clear(drawer);
+      drawer.appendChild(el("p", { class: "alert bad" },
+        esc(String(e.message || e))));
+    }
   }
   async function loadPool() {
     tkClosePopups();
