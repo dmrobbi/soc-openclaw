@@ -45,13 +45,40 @@
       : "dim";
     return el("span", { class: "badge " + cls }, String(kind || "?"));
   }
+  // Bearer token for POST /tools/* (2026-10-16, P1#1): the server
+  // refuses unauthenticated tool calls with 401. The token lives in
+  // localStorage; on the first 401 the browser prompts once, and a
+  // valid entry is sent as both X-SOC-Token and Authorization on
+  // subsequent calls. Pages/GETs stay unauthenticated server-side.
+  const TOKEN_KEY = "soc_token";
+  let tokenPrompted = false;
+  function authHeaders() {
+    const tok = localStorage.getItem(TOKEN_KEY) || "";
+    return tok ? { "X-SOC-Token": tok,
+                   "Authorization": "Bearer " + tok } : {};
+  }
   async function api(path, method, body) {
     const opts = { method: method || "GET" };
+    const headers = Object.assign({}, authHeaders());
     if (body) {
-      opts.headers = { "Content-Type": "application/json" };
+      headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
+    if (Object.keys(headers).length) opts.headers = headers;
     const r = await fetch(path, opts);
+    if (r.status === 401 && path.startsWith("/tools") && !tokenPrompted) {
+      // Ask once per page load; polling callers must not re-prompt
+      // every 15 s if the operator dismisses the dialog.
+      tokenPrompted = true;
+      const t = prompt(
+        "SOC dashboard token required\n"
+        + "(bearer token from soc-dashboard.env on the SOC host):");
+      if (t && t.trim()) {
+        localStorage.setItem(TOKEN_KEY, t.trim());
+        return api(path, method, body);
+      }
+      localStorage.removeItem(TOKEN_KEY);
+    }
     const ct = r.headers.get("content-type") || "";
     const data = ct.includes("json") ? await r.json() : await r.text();
     if (!r.ok) throw new Error(`${r.status}: ${typeof data === "string" ? data : JSON.stringify(data)}`);
@@ -1323,90 +1350,570 @@
     );
   }
 
-  // 2026-10-15: tickets page state (filter + search) lives here so
-  // re-renders within the page keep it.
-  let ticketFilter = "open";
-  let ticketQuery = "";
+  // 2026-10-15 (rev 2): dynamic faceted tickets browser — owner request.
+  // Popup filter lists (status, severity, hosts, labels/categories,
+  // assignee, created-date range) + full-text search + display options
+  // (sort, page size, visible columns). Pool = the most recent 1000
+  // tickets (incl. archive) via list_tickets(archived="all"); deep text
+  // search switches to search_tickets (limit 500 — reaches the whole
+  // store, archive included). Facet lists are computed from the pool and
+  // every filtering/sorting runs client-side.
 
-  async function pageTickets() {
-    const sel = el("select");
-    for (const opt of [
-      ["open", "Open (default)"],
-      ["in_progress", "In progress"],
-      ["waiting", "Waiting"],
-      ["closed", "Closed (last 30d)"],
-      ["archived", "Archived (closed >30d)"],
-      ["all", "All (incl. archived)"],
-    ]) sel.appendChild(el("option", { value: opt[0] }, opt[1]));
-    sel.value = ticketFilter;
-    const inp = el("input", { type: "search",
-      placeholder: "Search all tickets (title/body/labels, incl. archived) — Enter to search",
-      style: "margin-left:12px; min-width:320px" });
-    inp.value = ticketQuery;
-    const out = el("div", { class: "section" });
-    const nodes = [
-      el("h1", null, "Tickets"),
-      el("div", { class: "section" },
-        el("h2", null, "View / search"),
-        el("p", null, sel, inp)),
-      out,
-    ];
-    let statsData = null;
-    try { statsData = await api("/tools/tickets_stats_proxy", "POST", {}); }
-    catch (e) { statsData = null; }
+  const TK_STATUS_KINDS = [
+    ["open", "Open"],
+    ["in_progress", "In progress"],
+    ["waiting", "Waiting"],
+    ["closed", "Closed (fresh, <30d)"],
+    ["archived", "Archived (>30d or flagged)"],
+  ];
+  const TK_SORTS = [
+    ["created_desc", "Newest first"],
+    ["created_asc", "Oldest first"],
+    ["updated_desc", "Recently updated"],
+    ["sev_desc", "Severity (high first)"],
+    ["sev_asc", "Severity (low first)"],
+  ];
+  const TK_SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+  const TK_COLS = [
+    ["id", "ticket"], ["title", "title"], ["sev", "severity"],
+    ["status", "status"], ["hosts", "hosts"], ["cats", "labels"],
+    ["ref", "alert ref"], ["asg", "assignee"], ["cc", "comments"],
+    ["created", "created"], ["updated", "updated"], ["closed", "closed"],
+  ];
+  const TK_PAGE_SIZES = [25, 50, 100, 250];
 
-    async function loadList() {
-      clear(out);
-      out.appendChild(el("p", { class: "muted" }, "Loading…"));
-      try {
-        let data;
-        const q = ticketQuery.trim();
-        if (q) {
-          data = await api("/tools/tickets_search_proxy", "POST",
-            { q: q, limit: 100 });
-        } else if (ticketFilter === "archived") {
-          data = await api("/tools/tickets_list_proxy", "POST",
-            { archived: "only", limit: 100 });
-        } else if (ticketFilter === "all") {
-          data = await api("/tools/tickets_list_proxy", "POST",
-            { archived: "all", limit: 100 });
-        } else {
-          data = await api("/tools/tickets_list_proxy", "POST",
-            { status: ticketFilter, limit: 100 });
-        }
-        clear(out);
-        const rows = (data && data.tickets) || [];
-        if (q && data && data.total != null)
-          out.appendChild(el("p", { class: "muted" },
-            "matched " + data.total + " — showing " + rows.length));
-        else
-          out.appendChild(el("h2", null,
-            "View: " + ticketFilter + " — showing " + rows.length));
-        if (!q && ticketFilter === "open" && statsData && statsData.ok) {
-          const s = statsData;
-          out.appendChild(el("p", { class: "muted" },
-            "open total: " + (s.open_total || 0) +
-            " · created 24h (still open): " + (s.open_created_24h || 0) +
-            " · closed <30d: " + (s.closed_recent_30d || 0) +
-            " · archived >30d: " + (s.archived_total || 0)));
-          if ((s.archived_total || 0) > 0)
-            out.appendChild(el("p", { class: "muted" },
-              "Archived tickets are outside this view — use the " +
-              "Archived filter or Search to reach them."));
-        }
-        out.appendChild(ticketsList(rows));
-      } catch (e) {
-        clear(out);
-        errorView(e).forEach(n => out.appendChild(n));
+  let tkPool = [];          // current window of ticket rows
+  let tkPoolTotal = null;   // store total behind the pool fetch
+  let tkQ = "";             // active server-side search text ("" = browse)
+  let tkStats = null;
+  let tkRenderN = 50;       // rows currently rendered (Show-more paging)
+  let tkSelections = {
+    status: ["open"],       // multi incl. the archived kind
+    severity: [],           // multi (empty = no filter)
+    hosts: [],              // multi, from agent-* labels
+    cats: [],               // multi, from other labels
+    asg: [],                // multi
+    from: "", to: "",       // created_at (UTC) window
+    sort: "created_desc",
+    pageSize: 50,
+  };
+  let tkCols = {
+    title: true, sev: true, status: true, hosts: true, cats: false,
+    ref: false, asg: false, cc: false, created: true,
+    updated: false, closed: false,
+  };
+  let tkInput = null, tkBarDom = null, chipsDom = null, outDom = null;
+  let tkStatsEl = null, tkBarRefs = [];
+
+  function tkIsArchived(r) {
+    // Same semantics as C3: stored flag wins, else closed >30d.
+    if (r.archived === true) return true;
+    if (r.status !== "closed") return false;
+    const c = r.closed_at ? Date.parse(r.closed_at) : NaN;
+    return !isNaN(c) && (Date.now() - c) > 30 * 86400000;
+  }
+  function tkKind(r) {
+    return tkIsArchived(r) ? "archived" : (r.status || "?");
+  }
+  function tkHosts(r) {
+    return (r.labels || []).filter(l => String(l).slice(0, 6) === "agent-")
+      .map(l => String(l).slice(6));
+  }
+  function tkCats(r) {
+    return (r.labels || []).filter(l => String(l).slice(0, 6) !== "agent-");
+  }
+  function tkFacets() {
+    const f = { status: {}, severity: {}, hosts: {}, cats: {}, asg: {} };
+    for (const r of tkPool) {
+      const k = tkKind(r);
+      f.status[k] = (f.status[k] || 0) + 1;
+      const s = r.severity || "?";
+      f.severity[s] = (f.severity[s] || 0) + 1;
+      const hs = tkHosts(r);
+      if (hs.length) for (const h of hs) f.hosts[h] = (f.hosts[h] || 0) + 1;
+      else f.hosts["(none)"] = (f.hosts["(none)"] || 0) + 1;
+      for (const c of tkCats(r)) f.cats[c] = (f.cats[c] || 0) + 1;
+      const a = r.assignee || "-";
+      f.asg[a] = (f.asg[a] || 0) + 1;
+    }
+    return f;
+  }
+  function tkSorted(rows) {
+    const s = tkSelections.sort;
+    const cmp = (k) => (a, b) =>
+      String(a[k] || "").localeCompare(String(b[k] || ""));
+    const cmpDesc = (k) => (a, b) =>
+      String(b[k] || "").localeCompare(String(a[k] || ""));
+    if (s === "created_asc") return rows.slice().sort(cmp("created_at"));
+    if (s === "updated_desc")
+      return rows.slice().sort(cmpDesc("updated_at"));
+    if (s === "sev_asc") return rows.slice().sort((a, b) =>
+      ((TK_SEV_RANK[b.severity] ?? 9) - (TK_SEV_RANK[a.severity] ?? 9)));
+    if (s === "sev_desc") return rows.slice().sort((a, b) =>
+      ((TK_SEV_RANK[a.severity] ?? 9) - (TK_SEV_RANK[b.severity] ?? 9)) ||
+      cmpDesc("created_at")(a, b));
+    return rows.slice().sort(cmpDesc("created_at"));
+  }
+  function tkPasses(r) {
+    const S = tkSelections;
+    if (S.status.length && !S.status.includes(tkKind(r))) return false;
+    if (S.severity.length &&
+        !S.severity.includes(r.severity || "?")) return false;
+    if (S.hosts.length) {
+      const hs = tkHosts(r);
+      // "none" matches tickets carrying no host label; others match any.
+      if (!S.hosts.some(h =>
+        h === "(none)" ? hs.length === 0 : hs.includes(h))) return false;
+    }
+    if (S.cats.length) {
+      const cs = tkCats(r);
+      if (!S.cats.some(c => cs.includes(c))) return false;
+    }
+    if (S.asg.length && !S.asg.includes(r.assignee || "-")) return false;
+    if (S.from || S.to) {
+      const t = Date.parse(r.created_at || "");
+      if (isNaN(t)) return false;
+      if (S.from) {
+        const a = Date.parse(S.from + "T00:00:00Z");
+        if (!isNaN(a) && t < a) return false;
+      }
+      if (S.to) {
+        const b = Date.parse(S.to + "T23:59:59.999Z");
+        if (!isNaN(b) && t > b) return false;
       }
     }
-    sel.onchange = () => { ticketFilter = sel.value; ticketQuery = "";
-      inp.value = ""; loadList(); };
-    inp.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") {
-        ticketQuery = inp.value; loadList();
-      }});
-    await loadList();
+    return true;
+  }
+  function tkStatsLine() {
+    const s = tkStats || {};
+    return "store: open " + (s.open_total || 0) +
+      " · open created/24h " + (s.open_created_24h || 0) +
+      " · closed <30d " + (s.closed_recent_30d || 0) +
+      " · archived " + (s.archived_total || 0);
+  }
+  function tkClosePopups() {
+    document.querySelectorAll(".fpoppanel").forEach(p =>
+      p.classList.add("hidden"));
+  }
+  function tkWirePopups() {
+    if (tkWirePopups.done) return;
+    tkWirePopups.done = true;
+    document.addEventListener("click", tkClosePopups);
+  }
+  function tkOptionRow(text, n, checked, onChange) {
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = checked;
+    cb.addEventListener("change", () => onChange(cb.checked));
+    const kids = [cb, el("span", null, text)];
+    if (n != null) kids.push(el("span", { class: "muted" }, String(n)));
+    return el("label", { class: "fpopopt" }, ...kids);
+  }
+  function tkPopup(label, note, es, headExtras, cur, activeLen) {
+    const wrap = el("div", { class: "fpopwrap" });
+    const panel = el("div", { class: "fpoppanel hidden" });
+    panel.addEventListener("click", ev => ev.stopPropagation());
+    if (note) panel.appendChild(el("div", { class: "fpophd" }, note));
+    if (headExtras) for (const n of headExtras) panel.appendChild(n);
+    if (es && es.length && cur) {
+      if (cur.length) panel.appendChild(el("button",
+        { class: "fpopclr", type: "button", onclick: () => {
+          cur.splice(0);
+          panel.querySelectorAll("input[type=checkbox]").forEach(c =>
+            { c.checked = false; });
+          renderResults();
+        } }, "clear"));
+      for (const e of es) panel.appendChild(tkOptionRow(
+        e.label, e.n, cur.includes(e.id), on => {
+          const i = cur.indexOf(e.id);
+          if (on && i < 0) cur.push(e.id);
+          if (!on && i >= 0) cur.splice(i, 1);
+          renderResults();
+        }));
+    }
+    const btn = el("button", { class: "fpopbtn", type: "button" }, "");
+    function setLabel() {
+      const n = activeLen ? activeLen() : (cur ? cur.length : 0);
+      btn.textContent = label + (n ? " · " + n : "");
+      btn.classList.toggle("selactive", n > 0);
+    }
+    btn.addEventListener("click", ev => {
+      ev.stopPropagation();
+      const wasHidden = panel.classList.contains("hidden");
+      tkClosePopups();
+      if (wasHidden) panel.classList.remove("hidden");
+    });
+    setLabel();
+    wrap.appendChild(btn);
+    wrap.appendChild(panel);
+    return { wrap, refresh: setLabel };
+  }
+  function tkMultiPop(label, note, kind, entries, display) {
+    const cur = tkSelections[kind];
+    const es = entries.map(e => ({
+      id: e.id, n: e.n,
+      label: (display ? display(e.id) : e.id),
+    }));
+    return tkPopup(label, note, es, null, cur);
+  }
+  function tkDatePop() {
+    const S = tkSelections;
+    const from = el("input", { type: "date", class: "tkdate" });
+    const to = el("input", { type: "date", class: "tkdate" });
+    from.value = S.from; to.value = S.to;
+    from.addEventListener("change", () => {
+      S.from = from.value || ""; renderResults(); });
+    to.addEventListener("change", () => {
+      S.to = to.value || ""; renderResults(); });
+    const preset = (n, text) => el("button", { class: "fpopbtn",
+      type: "button", onclick: () => {
+        S.from = n == null ? ""
+          : new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+        from.value = S.from; to.value = S.to;
+        renderResults();
+      } }, text);
+    const head = [
+      el("div", { class: "fpophd" }, "created between (UTC):"),
+      el("div", { class: "tkbar" }, from, to),
+      el("div", { class: "tkbar" },
+        preset(1, "24h"), preset(7, "7d"),
+        preset(30, "30d"), preset(null, "all")),
+    ];
+    return tkPopup("Date range", null, [], head, null,
+      () => (S.from || S.to ? 1 : 0));
+  }
+  function tkDisplayPop() {
+    const S = tkSelections;
+    const sortSel = el("select");
+    for (const [v, l] of TK_SORTS)
+      sortSel.appendChild(el("option", { value: v }, l));
+    sortSel.value = S.sort;
+    sortSel.addEventListener("change", () => {
+      S.sort = sortSel.value; renderResults(); });
+    const psSel = el("select");
+    for (const n of TK_PAGE_SIZES)
+      psSel.appendChild(el("option", { value: String(n) }, n + " / page"));
+    psSel.value = String(S.pageSize);
+    psSel.addEventListener("change", () => {
+      S.pageSize = parseInt(psSel.value, 10) || 50;
+      tkRenderN = S.pageSize; renderResults(); });
+    const colRows = TK_COLS.map(([k, l]) =>
+      tkOptionRow(l, null, !!tkCols[k], on => {
+        tkCols[k] = on; renderResults(); }));
+    const head = [
+      el("div", { class: "fpophd" }, "sort + page size"),
+      el("div", { class: "tkbar" }, sortSel, psSel),
+      el("div", { class: "fpophd" }, "columns"),
+      ...colRows,
+    ];
+    return tkPopup("Display", null, [], head, null, () => 0);
+  }
+  function renderBar() {
+    tkClosePopups();
+    clear(tkBarDom);
+    tkBarRefs = [];
+    if (!tkPool.length) return;
+    const fl = tkFacets();
+    const kOrd = (k) => {
+      const i = TK_STATUS_KINDS.findIndex(([x]) => x === k);
+      return i < 0 ? 99 : i;
+    };
+    tkBarRefs.push(tkMultiPop("Status",
+      "status kinds in the pulled pool", "status",
+      Object.keys(fl.status).sort((a, b) => kOrd(a) - kOrd(b))
+        .map(k => ({ id: k, n: fl.status[k] })),
+      id => (TK_STATUS_KINDS.find(([k]) => k === id) || [id])[1]));
+    tkBarRefs.push(tkMultiPop("Severity",
+      "severities in the pulled pool", "severity",
+      Object.keys(fl.severity).sort((a, b) =>
+        ((TK_SEV_RANK[a] ?? 9) - (TK_SEV_RANK[b] ?? 9)))
+        .map(k => ({ id: k, n: fl.severity[k] }))));
+    tkBarRefs.push(tkMultiPop("Hosts",
+      "hosts (agent-* labels) in the pulled pool — match any", "hosts",
+      Object.keys(fl.hosts).sort((a, b) => fl.hosts[b] - fl.hosts[a])
+        .map(k => ({ id: k, n: fl.hosts[k] }))));
+    tkBarRefs.push(tkMultiPop("Labels",
+      "other labels (categories) in the pulled pool", "cats",
+      Object.keys(fl.cats).sort((a, b) => fl.cats[b] - fl.cats[a])
+        .map(k => ({ id: k, n: fl.cats[k] }))));
+    if (Object.keys(fl.asg).length > 1 || tkSelections.asg.length)
+      tkBarRefs.push(tkMultiPop("Assignee",
+        "assignees in the pulled pool", "asg",
+        Object.keys(fl.asg).sort((a, b) => fl.asg[b] - fl.asg[a])
+          .map(k => ({ id: k, n: fl.asg[k] }))));
+    tkBarRefs.push(tkDatePop());
+    tkBarRefs.push(tkDisplayPop());
+    for (const p of tkBarRefs) tkBarDom.appendChild(p.wrap);
+  }
+  function renderChips() {
+    const S = tkSelections;
+    clear(chipsDom);
+    const mk = (text, act) => el("span", { class: "tkchip" },
+      el("span", null, text), " ",
+      el("button", { class: "fpopclr", type: "button", onclick: act }, "×"));
+    const rmOne = (key, id) => () => {
+      const a = S[key];
+      const i = a.indexOf(id);
+      if (i >= 0) a.splice(i, 1);
+      renderResults();
+    };
+    if (tkQ) chipsDom.appendChild(mk("search: " + tkQ,
+      () => { tkQ = ""; tkInput.value = ""; loadPool(); }));
+    for (const id of S.status)
+      chipsDom.appendChild(mk("status: " + id, rmOne("status", id)));
+    for (const id of S.severity)
+      chipsDom.appendChild(mk("severity: " + id, rmOne("severity", id)));
+    for (const id of S.hosts)
+      chipsDom.appendChild(mk("host: " + id, rmOne("hosts", id)));
+    for (const id of S.cats)
+      chipsDom.appendChild(mk("label: " + id, rmOne("cats", id)));
+    for (const id of S.asg)
+      chipsDom.appendChild(mk("assignee: " + id, rmOne("asg", id)));
+    if (S.from || S.to)
+      chipsDom.appendChild(mk("created: " + (S.from || "…") +
+        " → " + (S.to || "now"), () => {
+          S.from = ""; S.to = ""; renderBar(); renderResults(); }));
+    if (chipsDom.childNodes.length)
+      chipsDom.insertBefore(el("span", { class: "muted",
+        style: "margin-right:6px" }, "filters:"), chipsDom.firstChild);
+  }
+  function tkCell(r, c) {
+    switch (c) {
+      case "id": return el("td", null, el("a", {
+        href: "/tickets/" + encodeURIComponent(r.id || ""),
+        "data-link": "" }, r.id || "-"));
+      case "title": {
+        const s = String(r.title || "-");
+        return el("td", null, s.length > 90 ? s.slice(0, 90) + "…" : s);
+      }
+      case "sev": return el("td", null, badge(r.severity || "?"));
+      case "status": return el("td", null, badge(tkKind(r)));
+      case "hosts": return el("td", null, tkHosts(r).join(", ") || "-");
+      case "cats": return el("td", null, tkCats(r).join(", ") || "-");
+      case "ref": return el("td", null, el("code", null,
+        r.source_alert_ref || "-"));
+      case "asg": return el("td", null, r.assignee || "-");
+      case "cc": return el("td", null, String(r.comment_count || 0));
+      case "created": return el("td", null, fmtTime(r.created_at));
+      case "updated": return el("td", null, fmtTime(r.updated_at));
+      case "closed":
+        return el("td", null, r.closed_at ? fmtTime(r.closed_at) : "-");
+      default: return el("td", null, "-");
+    }
+  }
+  function tkTable(rows) {
+    const cols = TK_COLS.filter(([k]) => tkCols[k]);
+    return el("table", { class: "tktable" },
+      el("thead", null, el("tr", null,
+        ...cols.map(([k, l]) => el("th", null, l)))),
+      el("tbody", null, ...rows.map(r => tkRow(r, cols))));
+  }
+  // 2026-10-15 (rev 3, owner request): the whole row is the select
+  // surface. Click — or Enter/Space on a focused row — expands an inline
+  // detail drawer for that ticket: full body, labels, alert ref, latest
+  // comments, and a link to the dedicated /tickets/<id> page. Anchors
+  // keep their own routing; text-selection and modifier clicks stay
+  // native; open detail fetches are cached per session.
+  const tkTk = {};            // tid -> fetched detail (session cache)
+  function tkNav(tid) {
+    const a = document.createElement("a");
+    a.setAttribute("href", "/tickets/" + encodeURIComponent(tid));
+    a.setAttribute("data-link", "");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  function tkRow(r, cols) {
+    const tr = el("tr", { class: "tkrow", tabindex: "0" });
+    cols.forEach(([k]) => tr.appendChild(tkCell(r, k)));
+    const toggle = ev => {
+      if (ev.type === "keydown" &&
+          !(ev.key === "Enter" || ev.key === " ")) return;
+      if (ev.target && ev.target.closest && ev.target.closest("a")) return;
+      if (ev.type === "click") {
+        if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+        const s = (typeof window.getSelection === "function")
+          ? window.getSelection() : null;
+        if (s && String(s.toString()).length) return;
+      }
+      ev.stopPropagation();
+      tkToggleDrawer(tr, r);
+    };
+    tr.addEventListener("click", toggle);
+    tr.addEventListener("keydown", toggle);
+    return tr;
+  }
+  function tkToggleDrawer(tr, r) {
+    if (tr.dataset.open === "1") {
+      const d = tr.nextElementSibling;
+      if (d && d.classList.contains("tkexpandrow")) d.remove();
+      tr.dataset.open = "";
+      tr.classList.remove("tksel");
+      return;
+    }
+    tkClosePopups();
+    tr.dataset.open = "1";
+    tr.classList.add("tksel");
+    const tid = r.id || "";
+    const drawer = el("div", { class: "tkdrawer" });
+    drawer.appendChild(el("p", { class: "muted" },
+      tid + ": loading detail…"));
+    const drow = el("tr", { class: "tkexpandrow" },
+      el("td", { colspan: String(tr.children.length) }, drawer));
+    tr.after(drow);
+    tkDrawerFill(drawer, r, tid);
+  }
+  async function tkDrawerFill(drawer, r, tid) {
+    try {
+      if (!tkTk[tid]) {
+        const data = await api("/tools/get_ticket_proxy", "POST",
+          { ticket_id: tid });
+        tkTk[tid] = (data && data.ok && data.ticket) || null;
+      }
+      const t = tkTk[tid];
+      clear(drawer);
+      if (!t) {
+        drawer.appendChild(el("p", { class: "muted" },
+          tid + ": ticket not found in the store"));
+        return;
+      }
+      const head = el("div", { class: "tkdrawerhead" },
+        badge(t.severity || "?"), badge(tkKind(t)), " ",
+        el("span", { class: "muted" }, "@" + (t.assignee || "-")), " ",
+        el("a", { href: "/tickets/" + encodeURIComponent(tid),
+          "data-link": "" }, "full page →"));
+      drawer.appendChild(head);
+      const meta = el("p", { class: "muted" });
+      meta.appendChild(document.createTextNode(
+        "labels: " + ((t.labels || []).join(", ") || "-") +
+        " · alert ref: " + (t.source_alert_ref || "-")));
+      if (t.source_run_id) {
+        meta.appendChild(document.createTextNode(" · run: "));
+        meta.appendChild(el("a", {
+          href: "/runs/" + encodeURIComponent(t.source_run_id),
+          "data-link": "" }, t.source_run_id));
+      }
+      drawer.appendChild(meta);
+      drawer.appendChild(el("div", { class: "tkdrawerbody" },
+        el("pre", null, esc(String(t.body || "(empty body)")))));
+      const comments = t.comments || [];
+      if (comments.length) {
+        const ul = el("ul", { class: "list tkdrawercomments" });
+        comments.slice(0, 5).forEach(c => ul.appendChild(el("li", null,
+          el("strong", null, c.author || "system", ": "),
+          c.body || "",
+          el("span", { class: "muted" }, " (" + fmtTime(c.ts) + ")"))));
+        drawer.appendChild(ul);
+        if (comments.length > 5)
+          drawer.appendChild(el("p", { class: "muted" },
+            "+" + (comments.length - 5) +
+            " more comments on the full page"));
+      }
+    } catch (e) {
+      clear(drawer);
+      drawer.appendChild(el("p", { class: "alert bad" },
+        esc(String(e.message || e))));
+    }
+  }
+  async function loadPool() {
+    tkClosePopups();
+    clear(outDom);
+    outDom.appendChild(el("p", { class: "muted" },
+      tkQ ? "Searching…" : "Loading…"));
+    try {
+      const body = tkQ
+        ? await api("/tools/tickets_search_proxy", "POST",
+            { q: tkQ, limit: 500 })
+        : await api("/tools/tickets_list_proxy", "POST",
+            { archived: "all", limit: 1000 });
+      tkPool = (body && body.tickets) || [];
+      tkPoolTotal = (body && body.total != null)
+        ? Number(body.total) : tkPool.length;
+      tkRenderN = tkSelections.pageSize;
+      renderBar();
+      renderResults();
+    } catch (e) {
+      clear(outDom);
+      errorView(e).forEach(n => outDom.appendChild(n));
+    }
+  }
+  function renderResults() {
+    if (tkBarRefs) tkBarRefs.forEach(r => r.refresh());
+    renderChips();
+    const matched = tkPool.filter(tkPasses);
+    const sorted = tkSorted(matched);
+    clear(outDom);
+    outDom.appendChild(el("p", { class: "muted", style: "margin:2px 0 6px" },
+      tkQ
+        ? ("search \"" + tkQ + "\": matched " +
+           (tkPoolTotal != null ? tkPoolTotal : matched.length) +
+           (tkPool.length !== matched.length
+             ? " · facet-matched here: " + matched.length : "") +
+           (tkPoolTotal != null && tkPoolTotal > tkPool.length
+             ? " (first " + tkPool.length + " loaded — narrower search "
+               + "reaches the rest)" : ""))
+        : ("matched " + matched.length + " of " + tkPool.length +
+           " pulled" + (tkPoolTotal != null
+             ? " (store: " + tkPoolTotal + " total — the pool is the "
+               + "most recent " + tkPool.length + ", archive included; "
+               + "Search reaches the rest)" : ""))));
+    if (tkStatsEl && tkStats && tkStats.ok)
+      tkStatsEl.textContent = tkStatsLine();
+    if (!sorted.length) {
+      outDom.appendChild(el("p", { class: "empty" },
+        "No tickets match the current filters."));
+      return;
+    }
+    outDom.appendChild(tkTable(sorted.slice(0, tkRenderN)));
+    if (sorted.length > tkRenderN)
+      outDom.appendChild(el("p", { style: "margin-top:10px" },
+        el("button", { class: "fpopbtn", type: "button",
+          onclick: () => {
+            tkRenderN += tkSelections.pageSize; renderResults(); } },
+          "Show more (" + tkRenderN + " / " + sorted.length + ")")));
+  }
+  async function pageTickets() {
+    tkWirePopups();
+    tkInput = el("input", { type: "search",
+      style: "min-width:280px; flex:1 1 300px", maxlength: 256,
+      placeholder: "Search all tickets — title/body/labels, incl. archive (Enter)" });
+    tkInput.value = tkQ;
+    tkInput.addEventListener("keydown", ev => {
+      if (ev.key !== "Enter") return;
+      tkQ = String(tkInput.value || "").trim();
+      loadPool();
+    });
+    tkStatsEl = el("p", { class: "muted", style: "margin:0 0 8px" }, "");
+    tkBarDom = el("div", { class: "tkbar" });
+    chipsDom = el("div", { class: "tkchips" });
+    outDom = el("div", { class: "section" });
+    tkClosePopups();
+    const nodes = [
+      el("h1", null, "Tickets"),
+      el("div", { class: "tkbar", style: "margin:8px 0 10px" },
+        tkInput,
+        el("button", { class: "fpopbtn", type: "button",
+          onclick: () => loadPool() }, "Refresh"),
+        el("button", { class: "fpopbtn", type: "button",
+          onclick: () => {
+            tkSelections = {
+              status: [], severity: [], hosts: [], cats: [], asg: [],
+              from: "", to: "", sort: "created_desc",
+              pageSize: tkSelections.pageSize,
+            };
+            tkRenderN = tkSelections.pageSize;
+            renderBar(); renderResults();
+          } }, "Reset filters")),
+      tkStatsEl,
+      tkBarDom,
+      chipsDom,
+      outDom,
+    ];
+    try {
+      tkStats = await api("/tools/tickets_stats_proxy", "POST", {});
+      tkStatsEl.textContent = tkStats && tkStats.ok
+        ? tkStatsLine() : "";
+    } catch (e) { tkStats = null; }
+    await loadPool();
     return nodes;
   }
 

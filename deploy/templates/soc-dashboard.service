@@ -1,36 +1,48 @@
 # systemd unit for the SOC web dashboard (Track D, D2 — 2026-08-08).
 #
 # Run on the SOC host (the one running the C4 / C3 MCPs —
-# typically thing1 for the SIEM fleet).
+# typically thing1 for the SIEM fleet). Template: every
+# __SOC_USER__ placeholder is rendered for the SOC service user.
 #
 # Install:
-#   sudo cp scripts/soc/soc-dashboard/soc-dashboard.service \
+#   sudo cp deploy/templates/soc-dashboard.service \
 #           /etc/systemd/system/soc-dashboard.service
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now soc-dashboard
 #
 # Verifies:
 #   curl -sS http://127.0.0.1:8771/healthz
-#   open http://127.0.0.1:8771/soc/ in a browser
+#   open https://<lan-ip>:4771/ in a browser (nginx TLS front)
 #
 # Notes:
-#   - The unit binds 0.0.0.0:8771 (all interfaces) so the dashboard is
-#     reachable via Tailscale (<lan-ip>), LAN (e.g. <lan-ip>),
-#     or loopback (127.0.0.1). Set SOC_DASHBOARD_BIND=127.0.0.1 for
-#     loopback-only. Routes: /, /scores, /tenants/<id>, /agents/<id>,
-#     /runs/<id>, /healthz, /fleet.
-#     Set to the LAN IP + add a firewall rule to expose on LAN.
+#   - Auth (2026-10-16, audit P1#1): every POST /tools/<name> needs
+#     the shared bearer token SOC_DASHBOARD_TOKEN, loaded via
+#     EnvironmentFile from the SOC secrets dir (~ 600 perms, the
+#     hourly healthcheck asserts perms on every .env there).
+#     Header shapes: `Authorization: Bearer <token>`
+#     (curl/scripts) or `X-SOC-Token: <token>` (the browser UI
+#     prompts for it once). If the token file is missing the
+#     server fail-closes: tool POSTs get 401, pages/GETs stay
+#     open.
+#   - Bind (2026-10-16, audit P1#2): 127.0.0.1 — the plain-HTTP
+#     listener is loopback-only; LAN/Tailnet access goes through
+#     the nginx TLS front (sites-enabled/soc-dashboard,
+#     :4771 -> 127.0.0.1:8771, self-signed cert /etc/nginx/ssl/).
+#     History: <lan-ip> (Tailscale-only) -> 0.0.0.0
+#     (2026-08-10, LAN request) -> 127.0.0.1 (2026-10-16, TLS
+#     front). Set SOC_DASHBOARD_BIND to the LAN IP only with a
+#     matching firewall rule.
 #   - This dashboard is read-only. PUT and DELETE on any path
 #     return 405.
 #   - The dashboard has no data store of its own; it proxies
-#     to the C4 (audit-log) and C3 (tickets) MCPs. If those
-#     are down, the dashboard still serves pages but shows
-#     "backend offline" in the data sections.
+#     to the C1-C4 MCP tier. If those are down, the dashboard
+#     still serves pages but shows "backend offline" in the
+#     data sections (GET /healthz reports all four).
 #   - Requires PyYAML on the host for the tenant list (loaded
 #     from config/soc-routing.yaml).
 
 [Unit]
-Description=SOC web dashboard (read-only, proxies to C4 + C3 MCPs)
+Description=SOC web dashboard (bearer-token tool API; proxies to C1-C4 MCPs)
 Documentation=file:///opt/soc-openclaw/services/soc-dashboard/README.md
 After=network-online.target soc-audit-mcp.service soc-tickets-mcp.service
 Wants=network-online.target
@@ -44,22 +56,18 @@ Environment="SOC_ROUTING_CONFIG=/home/__SOC_USER__/.openclaw/soc/soc-routing.yam
 Environment="SOC_EVIDENCE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/evidence"
 Environment="SOC_SCORE_DIR=/home/__SOC_USER__/.openclaw/soc/compliance/scores"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# Bind to the Tailscale IP (default <lan-ip> for thing1) instead of
-# 127.0.0.1 so the dashboard is reachable from any tailnet device.
-# Set to 127.0.0.1 for loopback-only on the SOC host itself.
-# To bind to LAN instead, use the LAN IP + a firewall rule.
-# Bind to 0.0.0.0 (all interfaces) so the dashboard is reachable on
-# every IP the host has: Tailscale (e.g. <lan-ip> for thing1), LAN
-# (e.g. <lan-ip>), and loopback (127.0.0.1). Set to 127.0.0.1 for
-# loopback-only, or to a specific IP for tighter scoping.
-# Changed 2026-08-10 23:33 UTC from <lan-ip> (Tailscale-only) to
-# 0.0.0.0 (all interfaces) per user request to access via LAN.
-Environment="SOC_DASHBOARD_BIND=0.0.0.0"
+Environment="SOC_DASHBOARD_BIND=127.0.0.1"
 Environment="SOC_DASHBOARD_PORT=8771"
 Environment="SOC_DASHBOARD_C4_URL=http://127.0.0.1:8769"
 Environment="SOC_DASHBOARD_C3_URL=http://127.0.0.1:8768"
 Environment="SOC_DASHBOARD_C1_URL=http://127.0.0.1:8766"
+Environment="SOC_DASHBOARD_C2_URL=http://127.0.0.1:8767"
 Environment="SOC_FLEET_EXTRA=evgen-d:192.168.122.44:rocky:8,evgen-e:192.168.122.14:rocky:9,evgen-f:192.168.122.101:rocky:10"
+# Bearer token for the /tools/* POST API (2026-10-16, P1#1). File at
+# 600 <soc-user>:<soc-user> in the SOC secrets dir. The '-' prefix
+# keeps the unit startable if the file goes missing — the server
+# then fail-closes tool POSTs with 401s and logs a startup warning.
+EnvironmentFile=-/home/__SOC_USER__/.openclaw/soc/secrets/soc-dashboard.env
 # Port 8771 (not 8770) — 8770 is owned by soc-memory-mcp (Track A3).
 # Verified 2026-08-08 20:58 UTC during C2/C3/C4/D2 wire-up; see carry-forward.
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-dashboard/server.py

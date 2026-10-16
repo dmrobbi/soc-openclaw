@@ -143,3 +143,44 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
 .taskbar .tb-item.run { color: var(--warn); font-weight: 600; }
 .taskbar .tb-all { margin-left: auto; color: var(--accent); white-space: nowrap; }
 main { padding-bottom: 56px; }
+
+/* Dynamic tickets page (2026-10-15): popup filters, chips, faceted table */
+.tkbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fpopwrap { position: relative; display: inline-block; }
+.fpopbtn { background: var(--bg-elev); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.fpopbtn:hover { border-color: var(--accent); }
+.fpopbtn.selactive { border-color: var(--accent); color: var(--accent); }
+.fpoppanel { position: absolute; top: 36px; left: 0; z-index: 60;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 12px; min-width: 240px; max-width: 420px;
+  max-height: 340px; overflow: auto; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.fpoppanel.hidden { display: none; }
+.fpophd { color: var(--fg-dim); font-size: 12px; margin: 4px 0 6px 0; }
+.fpopopt { display: flex; align-items: center; gap: 8px; padding: 3px 0;
+  cursor: pointer; }
+.fpopopt .muted { margin-left: auto; font-size: 12px; }
+.fpopopt input { margin: 0; }
+.fpopclr { background: none; border: none; color: var(--bad); cursor: pointer;
+  padding: 2px 0 6px 0; font-size: 12px; }
+.tkchips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.tkchip { background: var(--bg-elev-2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 2px 10px; font-size: 12px; }
+.tkchip button { background: none; border: none; color: var(--fg-dim);
+  cursor: pointer; padding: 0 0 0 2px; font-size: 12px; }
+.tkchip button:hover { color: var(--bad); }
+.tktable { border-collapse: collapse; width: 100%; font-size: 13px; }
+.tktable th, .tktable td { text-align: left; padding: 6px 8px;
+  border-bottom: 1px solid var(--border); vertical-align: top; }
+.tktable th { color: var(--fg-dim); font-weight: 600; background: var(--bg-elev); }
+.tktable tr:hover td { background: var(--bg-elev); }
+.tkdate { min-width: 132px; }
+
+/* rev 3 (2026-10-15): row-selectable tickets + inline detail drawer */
+.tkrow { cursor: pointer; }
+.tkrow:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tkrow.tksel > td { background: var(--bg-elev-2); }
+.tkexpandrow > td { background: var(--bg-elev); padding: 10px 12px 14px 22px; }
+.tkdrawerhead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.tkdrawerbody pre { max-height: 220px; overflow: auto; font-size: 12px; }
+.tkdrawercomments { margin: 8px 0 0 0; }

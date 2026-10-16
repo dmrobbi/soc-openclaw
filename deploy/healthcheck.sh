@@ -8,6 +8,10 @@
 # NOTE: run as wez — the sub-agent check shells out to the openclaw CLI
 # (not on root's PATH) and the secret files are wez-owned.
 DASH="${SOC_DASHBOARD_URL:-http://127.0.0.1:8771}"
+# Bearer token for the dashboard tool API (2026-10-16 auth gate on
+# POST /tools/* — soc-dashboard.service loads the same file).
+# Empty token -> the unauthed call is refused and fleet goes red.
+DASH_TOKEN="$(sed -n 's/^SOC_DASHBOARD_TOKEN=//p' "${SOC_DASHBOARD_TOKEN_FILE:-/home/wez/.openclaw/soc/secrets/soc-dashboard.env}" 2>/dev/null | head -n1)"
 PASS=0
 FAIL=0
 ok()  { echo "  ok   $1"; PASS=$((PASS+1)); }
@@ -31,7 +35,10 @@ done
 curl -sf -m 5 "$DASH/healthz" >/dev/null 2>&1 && ok "dashboard $DASH/healthz" || bad "dashboard $DASH/healthz"
 
 echo "--- fleet (via C2 manager) ---"
-FLEET=$(curl -sf -m 10 -X POST -H "Content-Type: application/json" -d '{}' "$DASH/tools/fleet_status" 2>/dev/null)
+DASH_AUTH=()
+[ -n "$DASH_TOKEN" ] && DASH_AUTH=(-H "Authorization: Bearer $DASH_TOKEN")
+FLEET=$(curl -sf -m 10 -X POST -H "Content-Type: application/json" \
+  "${DASH_AUTH[@]}" -d '{}' "$DASH/tools/fleet_status" 2>/dev/null)
 if [ -n "$FLEET" ]; then
   eval "$(echo "$FLEET" | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d.get("summary",{}); print("T=%s A=%s" % (s.get("total",0), s.get("active",0)))' 2>/dev/null || echo "T=0 A=0")"
   T=${T:-0}; A=${A:-0}

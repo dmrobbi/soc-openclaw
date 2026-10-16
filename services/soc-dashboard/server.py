@@ -12,8 +12,9 @@ of the SOC fleet:
   /agents/<id>     - per-agent: last 24h activity for that
                      agent + low-confidence / error rate
   /runs/<id>       - per-run: drill-down via the C4 audit MCP
-  /healthz         - liveness (also tests the C4 and C3
-                     backends)
+  /healthz         - liveness (also probes all four MCP
+                     backends: C1 wazuh, C2 manager,
+                     C3 tickets, C4 audit)
   /tools.json      - the tool inventory (so the dashboard's
                      own tools surface is discoverable)
 
@@ -29,6 +30,16 @@ Transport
 Same shape as the rest of the SOC MCP servers: stdlib
 HTTP, loopback-only by default, no third-party deps. PUT and
 DELETE on any path return 405 (the dashboard is read-only).
+
+Auth (2026-10-16, P1#1): every POST /tools/<name> requires a
+shared bearer token — `Authorization: Bearer <token>` or
+`X-SOC-Token: <token>` — matched against SOC_DASHBOARD_TOKEN
+(the systemd unit loads it from
+~/.openclaw/soc/secrets/soc-dashboard.env). Unset/empty env
+fails closed: tool POSTs are refused with 401 while pages and
+GETs stay open. LAN exposure goes through a TLS reverse proxy
+(nginx site soc-dashboard) since 2026-10-16; the plain
+listener is loopback-only by default.
 
 Routing
 -------
@@ -57,6 +68,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
+import hmac
 import json
 import os
 import re
@@ -66,6 +79,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -82,6 +96,12 @@ DEFAULT_C1_URL = "http://127.0.0.1:8766"   # soc-wazuh-mcp
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "static")
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+# Static-body gzip cache, keyed by (path, st_mtime_ns) so an edited
+# app.js re-compresses on the next request instead of serving stale
+# bytes (2026-10-16, P2#7). The static tree is tiny; no eviction
+# math beyond a blunt size cap.
+_GZ_CACHE: Dict[Tuple[str, int], bytes] = {}
 
 DASHBOARD_TOOLS = (
     "overview", "tenant_view", "agent_view", "run_view",
@@ -1341,14 +1361,43 @@ def tool_fleet_summary(args: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 class _Handler(BaseHTTPRequestHandler):
     server_version = "soc-dashboard/1.0"
+    # Python version scrubbed from the Server header (2026-10-16,
+    # P2#16); version_string() strips the empty-sys_version remnant.
+    sys_version = ""
+    # HTTP/1.1 keep-alive: every send path sets Content-Length; the
+    # error paths that respond without consuming a request body
+    # send Connection: close instead (see _json/do_PUT/do_DELETE).
+    protocol_version = "HTTP/1.1"
+    # Reap idle keep-alive connections (browser tabs keep one open
+    # each; without this a thread pins to every open tab forever).
+    timeout = 65
+    _head_only = False
+
+    def version_string(self) -> str:
+        return (self.server_version + " " + self.sys_version).rstrip()
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
+    def _client_ip(self) -> str:
+        """Peer IP, or X-Real-IP when the peer is loopback.
+
+        The nginx TLS front proxies from loopback, so the raw peer
+        would log 127.0.0.1 for every LAN client; nginx always sets
+        X-Real-IP from $remote_addr. Only loopback peers are
+        honored — a direct non-loopback client can't spoof it, and
+        a loopback caller spoofing it is admin territory."""
+        peer = self.client_address[0] if self.client_address else "-"
+        if peer in ("127.0.0.1", "::1"):
+            real = (self.headers.get("X-Real-IP") or "").strip()
+            if real:
+                return real
+        return peer
+
     def _log(self, method: str, status: int, ms: float) -> None:
         sys.stderr.write(
             f"[{dt.datetime.now(dt.timezone.utc).isoformat(timespec='milliseconds')}] "
-            f"{self.client_address[0]} {method} {self.path} -> {status} "
+            f"{self._client_ip()} {method} {self.path} -> {status} "
             f"({ms:.1f}ms)\n")
         sys.stderr.flush()
 
@@ -1485,7 +1534,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                if not self._head_only:
+                    self.wfile.write(body)
                 self._log("GET", 200, (time.monotonic() - t0) * 1000)
                 return
             self._json(404, {"ok": False, "error": "not found"})
@@ -1502,10 +1552,28 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(404, {"ok": False, "error": "not found"})
         self._log("GET", 404, (time.monotonic() - t0) * 1000)
 
+    def do_HEAD(self) -> None:  # noqa: N802
+        """HEAD mirrors GET minus the body (2026-10-16, P2#7: HEAD
+        used to answer 501, which breaks uptime monitors)."""
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
     def do_POST(self) -> None:  # noqa: N802
         t0 = time.monotonic()
         path = self.path or "/"
         path, _, _ = path.partition("?")
+        # Read the body before dispatch: the 404/401 error paths
+        # below respond without consuming it, and with HTTP/1.1
+        # keep-alive leftover body bytes would corrupt the next
+        # request on the same connection.
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+        except ValueError:
+            raw = b"{}"
         m = re.match(r"^/tools/([A-Za-z0-9_]+)$", path)
         if not m:
             self._json(404, {"ok": False, "error": "not found"})
@@ -1516,12 +1584,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": f"unknown tool: {tool}"})
             self._log("POST", 404, (time.monotonic() - t0) * 1000)
             return
+        # Bearer-token gate before any tool runs (2026-10-16, P1#1 —
+        # see _check_tool_auth for the accepted header shapes).
+        if not self._check_tool_auth():
+            self._log("POST", 401, (time.monotonic() - t0) * 1000)
+            return
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b"{}"
             args = json.loads(raw.decode("utf-8")) if raw else {}
         except json.JSONDecodeError as e:
             self._json(400, {"ok": False, "error": f"bad json: {e}"})
+            self._log("POST", 400, (time.monotonic() - t0) * 1000)
             return
         impl = {
             "overview": tool_overview,
@@ -1608,7 +1680,7 @@ class _Handler(BaseHTTPRequestHandler):
                         details={**_task_details(tool, args), "error": repr(e)[:300]})
             except Exception:
                 pass
-            self._json(500, {"ok": False, "error": f"internal: {e!r}",
+            self._json(500, {"ok": False, "error": "internal error",
                              "tool": tool})
             self._log("POST", 500, (time.monotonic() - t0) * 1000)
             return
@@ -1629,39 +1701,97 @@ class _Handler(BaseHTTPRequestHandler):
         self._log("POST", 200, (time.monotonic() - t0) * 1000)
 
     def do_PUT(self) -> None:  # noqa: N802
+        # 405 without consuming the body -> close the connection
+        # (HTTP/1.1 keep-alive would otherwise read stranded body
+        # bytes as the next request line).
         self._json(405, {"ok": False,
-                         "error": "method not allowed; this dashboard is read-only"})
+                         "error": "method not allowed; this dashboard is read-only"},
+                   close=True)
 
     def do_DELETE(self) -> None:  # noqa: N802
-        self._json(405, {"ok": False, "error": "method not allowed"})
+        self._json(405, {"ok": False, "error": "method not allowed"},
+                   close=True)
 
     # ---- helpers ----
+    def _check_tool_auth(self) -> bool:
+        """Bearer-token gate on every POST /tools/<name> (2026-10-16,
+        P1#1): any device on the LAN could otherwise reach mutation
+        tools like remediate_control / run_scan, and the only other
+        gate is SOC_MANAGER_MCP_ALLOW_MUTATIONS on the manager.
+        Accepts `Authorization: Bearer <token>` (curl/script
+        standard) or `X-SOC-Token: <token>` (what the browser UI
+        sends), matched constant-time against SOC_DASHBOARD_TOKEN.
+        Fail closed: an unset/empty env refuses every tool POST.
+        Pages, /healthz and other GETs stay open — this is
+        tool-dispatch auth, not site auth. Sends the 401 itself and
+        returns False."""
+        expected = os.environ.get("SOC_DASHBOARD_TOKEN", "").strip()
+        given_raw = (self.headers.get("Authorization")
+                     or self.headers.get("X-SOC-Token") or "").strip()
+        given = (given_raw[7:].strip()
+                 if given_raw.lower().startswith("bearer ")
+                 else given_raw)
+        matched = bool(expected) and hmac.compare_digest(
+            given.encode("utf-8"), expected.encode("utf-8"))
+        if not matched:
+            # The tool request body was already consumed by do_POST,
+            # but close anyway: an unauthenticated caller has no
+            # business holding a keep-alive connection open.
+            self._json(
+                401,
+                {"ok": False,
+                 "error": "unauthorized: missing or invalid bearer "
+                          "token (SOC_DASHBOARD_TOKEN)"},
+                headers={"WWW-Authenticate": 'Bearer realm="soc-tools"'},
+                close=True)
+        return matched
+
     def _healthz(self) -> Dict[str, Any]:
-        """Check that the dashboard itself is up, and report
-        whether the C4 / C3 backends are reachable. We don't
-        fail healthz if they're down — the dashboard can
-        still serve pages, they just show "backend offline"."""
-        c4 = os.environ.get("SOC_DASHBOARD_C4_URL", DEFAULT_C4_URL)
-        c3 = os.environ.get("SOC_DASHBOARD_C3_URL", DEFAULT_C3_URL)
-        c4_status, c4_body = _http_get(f"{c4}/healthz", timeout=2.0)
-        c3_status, c3_body = _http_get(f"{c3}/healthz", timeout=2.0)
+        """Check that the dashboard itself is up, and report whether
+        all four MCP backends are reachable (2026-10-16, P2#5: was
+        C4+C3 only — fleet/scores/logs also depend on C2 manager
+        and C1 wazuh, so the health page lied by omission while
+        those were down). We don't fail healthz if they're down —
+        the dashboard can still serve pages, they just show
+        "backend offline".
+
+        Probes fan out in parallel: 4 sequential probes would stack
+        to ~8 s when a backend hangs, and callers (topbar, cron
+        healthcheck) hit /healthz every few seconds."""
+        urls = {
+            "soc-wazuh-mcp": os.environ.get("SOC_DASHBOARD_C1_URL",
+                                            DEFAULT_C1_URL),
+            "soc-manager-mcp": os.environ.get("SOC_DASHBOARD_C2_URL",
+                                              DEFAULT_C2_URL),
+            "soc-tickets-mcp": os.environ.get("SOC_DASHBOARD_C3_URL",
+                                              DEFAULT_C3_URL),
+            "soc-audit-mcp": os.environ.get("SOC_DASHBOARD_C4_URL",
+                                            DEFAULT_C4_URL),
+        }
+        backends: Dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+            futs = {name: pool.submit(_http_get, f"{url}/healthz",
+                                      2.0)
+                    for name, url in urls.items()}
+            for name, fut in futs.items():
+                try:
+                    status, body = fut.result()
+                except Exception:
+                    # A backend that hangs hard enough to escape
+                    # _http_get's URLError net (raw socket timeout
+                    # on the body read) counts as unreachable, not
+                    # as a healthz crash.
+                    status, body = 0, None
+                backends[name] = {
+                    "url": urls[name],
+                    "reachable": status == 200,
+                    "ok": (body.get("ok", False)
+                           if isinstance(body, dict) else False),
+                }
         return {
             "ok": True,
             "server": self.server_version,
-            "backends": {
-                "soc-audit-mcp": {
-                    "url": c4,
-                    "reachable": c4_status == 200,
-                    "ok": (c4_body.get("ok", False)
-                           if isinstance(c4_body, dict) else False),
-                },
-                "soc-tickets-mcp": {
-                    "url": c3,
-                    "reachable": c3_status == 200,
-                    "ok": (c3_body.get("ok", False)
-                           if isinstance(c3_body, dict) else False),
-                },
-            },
+            "backends": backends,
         }
 
     def _serve_static(self, name: str) -> None:
@@ -1683,16 +1813,54 @@ class _Handler(BaseHTTPRequestHandler):
             ctype = "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
+        # gzip when the client asks for it and the payload is
+        # non-trivial text (2026-10-16, P2#7: app.js is ~110 KB plain
+        # / ~27 KB gzipped; browsers always send Accept-Encoding).
+        accept = (self.headers.get("Accept-Encoding") or "").lower()
+        if ("gzip" in accept and len(data) > 512
+                and (ctype.startswith("text/")
+                     or ctype.startswith("application/javascript")
+                     or ctype.startswith("application/json"))):
+            try:
+                mtime = os.stat(path).st_mtime_ns
+            except OSError:
+                mtime = 0
+            key = (path, mtime)
+            gz = _GZ_CACHE.get(key)
+            if gz is None:
+                # mtime=0 -> stable bytes, so a cached entry can't go
+                # stale relative to one keyed under the same mtime.
+                gz = gzip.compress(data, compresslevel=6, mtime=0)
+                if len(_GZ_CACHE) > 64:
+                    _GZ_CACHE.clear()
+                _GZ_CACHE[key] = gz
+            data = gz
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        self.wfile.write(data)
+        if not self._head_only:
+            self.wfile.write(data)
 
-    def _json(self, status: int, body: Dict[str, Any]) -> None:
+    def _json(self, status: int, body: Dict[str, Any],
+              headers: Optional[Dict[str, str]] = None,
+              close: bool = False) -> None:
+        """Render a JSON response. `headers` adds extra response
+        headers (e.g. WWW-Authenticate); `close` ends the connection
+        after this response — required on paths that answer without
+        consuming the request body, because with HTTP/1.1
+        keep-alive the stranded body bytes would corrupt the next
+        request on the connection."""
         try:
             data = json.dumps(body, default=str).encode("utf-8")
         except (TypeError, ValueError) as e:
-            data = json.dumps({"ok": False, "error": f"encode: {e}"}).encode("utf-8")
+            # 2026-10-16, P2#6: encode failures no longer echo the
+            # exception to the client — repr goes to stderr.
+            sys.stderr.write(
+                f"[soc-dashboard] response encode failure: {e!r}\n")
+            data = json.dumps(
+                {"ok": False, "error": "internal error"}).encode("utf-8")
             status = 500
         if len(data) > MAX_RESPONSE_BYTES:
             data = data[:MAX_RESPONSE_BYTES]
@@ -1700,9 +1868,14 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        if close:
+            self.send_header("Connection", "close")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if not self._head_only:
+            self.wfile.write(data)
 
 
 # ---------------------------------------------------------------------------
@@ -1715,6 +1888,11 @@ def serve(bind_host: str = DEFAULT_BIND_HOST,
         f"[soc-dashboard] listening on http://{bind_host}:{bind_port}/soc/ "
         f"(static={STATIC_DIR}, "
         f"c4={os.environ.get('SOC_DASHBOARD_C4_URL', DEFAULT_C4_URL)})\n")
+    if not os.environ.get("SOC_DASHBOARD_TOKEN", "").strip():
+        sys.stderr.write(
+            "[soc-dashboard] WARNING: SOC_DASHBOARD_TOKEN is unset — "
+            "every POST /tools/* is refused with 401 (fail closed); "
+            "pages and GETs stay open\n")
     sys.stderr.flush()
     try:
         srv.serve_forever()
@@ -1727,10 +1905,12 @@ def serve(bind_host: str = DEFAULT_BIND_HOST,
 def _smoke() -> int:
     """Self-test: bring up the server in a thread, exercise the
     tool layer (the static HTML is trivial and we just check
-    it's served). Mock the C4 + C3 HTTP calls by pointing at
+    it's served). Mock the C1-C4 HTTP calls by pointing at
     a non-existent URL — the tools should still return
     well-shaped responses (with the backend error in the
-    body), not crash."""
+    body), not crash. Runs with a fixed SOC_DASHBOARD_TOKEN
+    and exercises the bearer gate (401 without token, 401
+    with a wrong token)."""
     import threading
     import urllib.request as ur
 
@@ -1740,19 +1920,48 @@ def _smoke() -> int:
     os.environ["SOC_DASHBOARD_C4_URL"] = "http://127.0.0.1:1"
     os.environ["SOC_DASHBOARD_C3_URL"] = "http://127.0.0.1:1"
     os.environ["SOC_DASHBOARD_C2_URL"] = "http://127.0.0.1:1"
+    os.environ["SOC_DASHBOARD_C1_URL"] = "http://127.0.0.1:1"
+    # Auth (2026-10-16): the smoke runs with a fixed token; the tool
+    # calls below use the authed req() helper, except the cases that
+    # exist to prove the bearer gate itself (tok=None / wrong tok).
+    token = "smoke-test-token"
+    os.environ["SOC_DASHBOARD_TOKEN"] = token
 
     port = 18770
+
+    def req(path: str, data: Optional[bytes],
+            method: str = "POST",
+            tok: Optional[str] = token) -> ur.Request:
+        """Request builder for the tool calls below. Default: the
+        smoke bearer token; tok=None = unauthenticated (the 401
+        cases); any other value exercises it as given."""
+        headers: Dict[str, str] = {}
+        if tok is not None:
+            headers["Authorization"] = f"Bearer {tok}"
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        return ur.Request(f"http://127.0.0.1:{port}{path}",
+                          data=data, headers=headers, method=method)
+
     t = threading.Thread(target=serve, args=("127.0.0.1", port), daemon=True)
     t.start()
     time.sleep(0.5)
 
-    # /healthz
+    # /healthz — all four MCP backends reported (2026-10-16, P2#5);
+    # they are all pointed at port 1, so none can be reachable.
     with ur.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as r:
         body = json.loads(r.read())
         assert body["ok"] is True
-        # Backends are pointed at port 1; they should be unreachable.
-        assert body["backends"]["soc-audit-mcp"]["reachable"] is False
-        assert body["backends"]["soc-tickets-mcp"]["reachable"] is False
+        assert set(body["backends"]) == {
+            "soc-wazuh-mcp", "soc-manager-mcp",
+            "soc-tickets-mcp", "soc-audit-mcp"}, body["backends"].keys()
+        for backend in body["backends"].values():
+            assert backend["reachable"] is False
+            assert backend["ok"] is False
+        # HTTP/1.1 + Python-version scrub (2026-10-16, P2#7/P2#16)
+        assert r.version == 11, r.version
+        assert r.headers.get("Server") == "soc-dashboard/1.0", \
+            r.headers.get("Server")
 
     # /tools.json
     with ur.urlopen(f"http://127.0.0.1:{port}/tools.json", timeout=2) as r:
@@ -1773,12 +1982,15 @@ def _smoke() -> int:
         text = r.read().decode("utf-8")
         assert "<html" in text.lower() or "<!doctype" in text.lower()
 
-    # GET /static/app.js
+    # GET /static/app.js — plain fetch; keep the size as the
+    # uncompressed reference for the gzip check below.
+    app_js_len: Optional[int] = None
     try:
         with ur.urlopen(f"http://127.0.0.1:{port}/static/app.js",
                         timeout=2) as r:
             assert r.status == 200
-            assert len(r.read()) > 100
+            app_js_len = len(r.read())
+            assert app_js_len > 100
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
@@ -1816,13 +2028,57 @@ def _smoke() -> int:
     with ur.urlopen(f"http://127.0.0.1:{port}/fleet", timeout=2) as r:
         assert r.status == 200
 
+    # HEAD / — mirrors GET without a body (2026-10-16, P2#7: used to
+    # answer 501, breaking uptime monitors).
+    for head_path in ("/", "/static/app.js"):
+        with ur.urlopen(ur.Request(f"http://127.0.0.1:{port}{head_path}",
+                                   method="HEAD"), timeout=2) as r:
+            assert r.status == 200, r.status
+            assert r.headers.get("Content-Length") is not None
+            assert r.read() == b""
+
+    # gzip static (2026-10-16, P2#7): with Accept-Encoding: gzip the
+    # response carries Content-Encoding: gzip and decompresses back
+    # to the plain app.js bytes.
+    if app_js_len is not None:
+        with ur.urlopen(ur.Request(
+                f"http://127.0.0.1:{port}/static/app.js",
+                headers={"Accept-Encoding": "gzip"}), timeout=5) as r:
+            assert r.headers.get("Content-Encoding") == "gzip", \
+                r.headers.get("Content-Encoding")
+            gz = r.read()
+            import gzip as _gzip
+            assert len(_gzip.decompress(gz)) == app_js_len, \
+                (len(_gzip.decompress(gz)), app_js_len)
+            assert len(gz) < app_js_len
+
+    # POST /tools/fleet_status without a bearer token -> 401
+    # (2026-10-16, P1#1), with a Bearer WWW-Authenticate challenge.
+    try:
+        ur.urlopen(req("/tools/fleet_status", b"{}", tok=None),
+                   timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code == 401, e.code
+        assert e.headers.get("WWW-Authenticate", "").startswith(
+            "Bearer"), e.headers.get("WWW-Authenticate")
+    else:
+        raise AssertionError("expected 401 without bearer token")
+
+    # ...and a WRONG token is refused the same way.
+    try:
+        ur.urlopen(req("/tools/fleet_status", b"{}", tok="wrong-token"),
+                   timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code == 401, e.code
+    else:
+        raise AssertionError("expected 401 for a wrong token")
+
     # POST /tools/fleet_status — if C2 is reachable in this
     # env (smoke is run on the SOC host), we get real data;
     # if not, we get a well-shaped unreachable response.
     # Either way, the response is well-shaped.
-    with ur.urlopen(ur.Request(
-            f"http://127.0.0.1:{port}/tools/fleet_status",
-            data=b"{}", method="POST"), timeout=10) as r:
+    with ur.urlopen(req("/tools/fleet_status", b"{}"),
+                    timeout=10) as r:
         body = json.loads(r.read())
         assert "summary" in body, body
         assert "agents" in body, body
@@ -1832,18 +2088,15 @@ def _smoke() -> int:
         # The body shape is identical in both cases.
 
     # POST /tools/fleet_summary — same dual-path check
-    with ur.urlopen(ur.Request(
-            f"http://127.0.0.1:{port}/tools/fleet_summary",
-            data=b"{}", method="POST"), timeout=10) as r:
+    with ur.urlopen(req("/tools/fleet_summary", b"{}"), timeout=10) as r:
         body = json.loads(r.read())
         assert "fleet" in body, body
         assert "realtime" in body, body
         assert isinstance(body["fleet"], dict), body
 
     # POST /tools/compliance_scores_all
-    with ur.urlopen(ur.Request(
-            f"http://127.0.0.1:{port}/tools/compliance_scores_all",
-            data=b"{}", method="POST"), timeout=10) as r:
+    with ur.urlopen(req("/tools/compliance_scores_all", b"{}"),
+                    timeout=10) as r:
         body = json.loads(r.read())
         assert body["ok"] is True, body
         assert "tenants" in body, body
@@ -1852,9 +2105,7 @@ def _smoke() -> int:
 
     # POST /tools/compliance_score missing tenant_id -> 400
     try:
-        ur.urlopen(ur.Request(
-            f"http://127.0.0.1:{port}/tools/compliance_score",
-            data=b"{}", method="POST"), timeout=5)
+        ur.urlopen(req("/tools/compliance_score", b"{}"), timeout=5)
     except urllib.error.HTTPError as e:
         assert e.code == 400
     else:
@@ -1862,35 +2113,45 @@ def _smoke() -> int:
 
     # POST /tools/overview (backends unreachable; should
     # still return a well-shaped body, not 5xx)
-    with ur.urlopen(ur.Request(
-            f"http://127.0.0.1:{port}/tools/overview",
-            data=b"{}", method="POST"), timeout=10) as r:
+    with ur.urlopen(req("/tools/overview", b"{}"), timeout=10) as r:
         body = json.loads(r.read())
         assert body["ok"] is True, body
         # Backends are unreachable; audit_24h is a dict
         # (possibly empty) and tickets_recent is a list.
+        # 2026-10-16: ticket_total was dropped from the overview
+        # shape in the 2026-10-15 open-centric ticket reshape —
+        # asserting on it here kept the smoke red forever. The
+        # aggregate now lives in tickets_stats.
         assert isinstance(body.get("audit_24h"), dict), body
         assert isinstance(body.get("tickets_recent"), list), body
-        assert isinstance(body.get("ticket_total"), int), body
+        assert isinstance(body.get("tickets_stats"), dict), body
 
     # POST /tools/tenant_view missing tenant_id -> 400
     try:
-        ur.urlopen(ur.Request(
-            f"http://127.0.0.1:{port}/tools/tenant_view",
-            data=b"{}", method="POST"), timeout=5)
+        ur.urlopen(req("/tools/tenant_view", b"{}"), timeout=5)
     except urllib.error.HTTPError as e:
         assert e.code == 400
     else:
         raise AssertionError("expected 400 for missing tenant_id")
 
     # POST /tools/tenant_view with tenant_id
-    with ur.urlopen(ur.Request(
-            f"http://127.0.0.1:{port}/tools/tenant_view",
-            data=b'{"tenant_id":"example-soc"}', method="POST"),
-            timeout=10) as r:
+    with ur.urlopen(req("/tools/tenant_view",
+                        b'{"tenant_id":"example-soc"}'),
+                    timeout=10) as r:
         body = json.loads(r.read())
         assert body["ok"] is True
         assert body["tenant_id"] == "example-soc"
+
+    # The X-SOC-Token header (the browser UI's choice) is an accepted
+    # alias for the Authorization header.
+    with ur.urlopen(ur.Request(
+            f"http://127.0.0.1:{port}/tools/tasks_list",
+            data=b"{}",
+            headers={"Content-Type": "application/json",
+                     "X-SOC-Token": token},
+            method="POST"), timeout=10) as r:
+        body = json.loads(r.read())
+        assert body["ok"] is True, body
 
     # Bad path traversal -> 400
     try:
