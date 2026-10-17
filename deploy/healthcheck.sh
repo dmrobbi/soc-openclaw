@@ -11,7 +11,7 @@ DASH="${SOC_DASHBOARD_URL:-http://127.0.0.1:8771}"
 # Bearer token for the dashboard tool API (2026-10-16 auth gate on
 # POST /tools/* — soc-dashboard.service loads the same file).
 # Empty token -> the unauthed call is refused and fleet goes red.
-DASH_TOKEN="$(sed -n 's/^SOC_DASHBOARD_TOKEN=//p' "${SOC_DASHBOARD_TOKEN_FILE:-/home/wez/.openclaw/soc/secrets/soc-dashboard.env}" 2>/dev/null | head -n1)"
+DASH_TOKEN="$(sed -n 's/^SOC_DASHBOARD_TOKEN=//p' "${SOC_DASHBOARD_TOKEN_FILE:-/opt/soc-dashboard/soc-dashboard.env}" 2>/dev/null | head -n1)"
 PASS=0
 FAIL=0
 ok()  { echo "  ok   $1"; PASS=$((PASS+1)); }

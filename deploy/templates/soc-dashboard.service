@@ -67,7 +67,7 @@ Environment="SOC_FLEET_EXTRA=evgen-d:192.168.122.44:rocky:8,evgen-e:192.168.122.
 # 600 <soc-user>:<soc-user> in the SOC secrets dir. The '-' prefix
 # keeps the unit startable if the file goes missing — the server
 # then fail-closes tool POSTs with 401s and logs a startup warning.
-EnvironmentFile=-/home/__SOC_USER__/.openclaw/soc/secrets/soc-dashboard.env
+EnvironmentFile=-/opt/soc-dashboard/soc-dashboard.env
 # Port 8771 (not 8770) — 8770 is owned by soc-memory-mcp (Track A3).
 # Verified 2026-08-08 20:58 UTC during C2/C3/C4/D2 wire-up; see carry-forward.
 ExecStart=/usr/bin/python3 /opt/soc-openclaw/services/soc-dashboard/server.py
