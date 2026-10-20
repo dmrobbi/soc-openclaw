@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>soc-openclaw — a home SOC with an AI analyst</title>
+  <meta name="description" content="A step-by-step guide to a home SOC where OpenClaw is the always-on AI analyst: it watches logs and security tooling in real time, runs scheduled sweeps, triages findings, and pages you on your chat channel. Built from maintained tools — no custom SIEM code.">
+  <link rel="canonical" href="https://dmrobbi.github.io/soc-openclaw/">
+  <meta property="og:title" content="soc-openclaw — a home SOC with an AI analyst">
+  <meta property="og:description" content="Step-by-step home SOC: hardened host, watched logs, scheduled sweeps, an optional Wazuh SIEM tier, and an agent that triages instead of forwarding raw dumps.">
+  <meta property="og:type" content="website">
+  <style>
+    :root { --ink:#1a2233; --mut:#5a6478; --line:#e9ecf1; --gold:#8a6a2b; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin:0; font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Arial, sans-serif;
+           color:#1a2233; background:#f6f7f9; }
+    main { max-width: 68ch; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    h1 { font-family: Georgia, "Times New Roman", serif; font-size: 2.3rem; line-height:1.15; margin:0 0 0.4rem; }
+    .lede { color:#2f3a4f; font-size: 1.15rem; margin:0 0 1.5rem; }
+    h2 { font-family: Georgia, serif; font-size: 1.15rem; letter-spacing: .04em; text-transform: uppercase;
+         color:#5a6478; margin: 2.5rem 0 0.75rem; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { background:#fff; border:1px solid var(--line); padding: 0.05rem 0.35rem; border-radius:3px; font-size:0.9em; }
+    pre { background:#141b2d; color:#dfe6f3; padding: 0.9rem 1.1rem; border-radius:4px; overflow:auto; font-size:0.88rem; }
+    pre code { background:transparent; border:none; color:inherit; padding:0; }
+    .meta { color:#5a6478; font-size: 0.9rem; }
+    .card { background:#fff; border:1px solid var(--line); border-left:3px solid #c9a96a; padding:1rem 1.25rem; margin:1.25rem 0; }
+    a { color: var(--gold); }
+    footer { border-top: 1px solid var(--line); color: #5a6478; font-size: 0.85rem; padding: 1.5rem 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>soc-openclaw</h1>
+  <p class="lede">A step-by-step guide to a home SOC where <strong>OpenClaw is the always-on AI
+  analyst</strong>: it watches your host's logs and security tooling in real time, runs scheduled
+  sweeps, triages what it finds, and pages you on your chat channel.</p>
+
+  <p><a href="https://github.com/dmrobbi/soc-openclaw"><strong>Source repo →</strong></a> ·
+  <a href="https://github.com/dmrobbi/wazuh-stack">wazuh-stack (the SIEM tier's compose) →</a> ·
+  <a href="https://github.com/dmrobbi/soc-disk-health">soc-disk-health (the SMART addon) →</a></p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li><strong>Real-time stream triage</strong>: a supervised <code>tail -F</code> automation with
+    a match pattern pages you <em>after thinking</em> — "12 attempts from 203.x, fail2ban banned
+    them" — not with a raw log dump. <code>batchMs</code> folds a burst of matches into one alert.</li>
+    <li><strong>Scheduled sweeps</strong>: a written skill (the agent's playbook) runs a morning and
+    end-of-day check across failed units, journals, fail2ban state, logins, sockets, disk and
+    pending updates — and reports one line per finding, or a single clean line.</li>
+    <li><strong>Optional Wazuh SIEM tier</strong> with a <em>pull</em> pattern: a 5-minute job that
+    reads the newest alerts within its own computed window — stateless, so it survives restarts
+    without losing or double-sending anything.</li>
+    <li><strong>Hardening-first setup</strong>: the guide hardens the host (firewall, keys-only SSH,
+    unattended security updates) <em>before</em> anything connects agents, and keeps the Control UI
+    behind SSH tunnel or Tailscale.</li>
+    <li><strong>Built from maintained tools</strong>: fail2ban, auditd, Wazuh, OpenClaw — glue, not
+    a custom SIEM. The docs carry the architecture, the deploy guide, fleet onboarding, and a
+    simple-install path.</li>
+  </ul>
+
+  <h2>What it does NOT do</h2>
+  <div class="card">
+    <p><strong>Not an enterprise stack.</strong> This is a home-lab SOC for one operator. No multi-tenant
+    anything, no compliance regimes bundled in, no SLAs. (The compliance/commercial layer is
+    Bedim Security's separate work.)</p>
+    <p><strong>It does not nuke.</strong> The agent triages and recommends; it never auto-runs
+    destructive remediation — no bans, deletes, or service restarts without a human confirming.</p>
+    <p><strong>It does not cry wolf.</strong> Quiet hours are an explicit rule; "none = quiet, do not
+    page me" is part of the job text; alerts batch and dedupe aggressively, because a SOC that pages
+    every five minutes gets muted on day two.</p>
+    <p><strong>No custom detection code</strong>: the project deliberately composes existing,
+    maintained tooling; the interesting part is the supervision, the triage prompts, and the
+    evidence trail — not reimplementing a SIEM.</p>
+  </div>
+
+  <h2>Quickstart</h2>
+  <pre><code>git clone https://github.com/dmrobbi/soc-openclaw.git &amp;&amp; cd soc-openclaw
+# guides: quickstart.md, docs/SIMPLE-INSTALL.md, docs/deploy-guide.md
+
+# Step 0: a Linux server with sudo, Node.js 20+, a chat bot (Discord/Telegram token)
+npm install -g openclaw      # Step 1: install + onboard the gateway
+openclaw                     # first run walks through onboarding
+openclaw status              # verify health + channels</code></pre>
+  <p>Then Steps 2–9 take you through: connecting the chat channel, hardening the host, baseline
+  tooling (fail2ban/auditd), the SSH stream job, the sweep skill + its cron, the optional Wazuh
+  tier, an end-to-end pipeline test, and operating rules. Each step carries copy-paste automation
+  JSON.</p>
+
+  <h2>Methodology (dated)</h2>
+  <ul>
+    <li><strong>Release:</strong> v0.1.0, tagged 2026-10-19, with a dated CHANGELOG; the guide reflects
+    a deployed, production-proven instance (hardened host, stream + sweep + SIEM tiers all live).</li>
+    <li><strong>Method:</strong> compose existing tools; supervised stream automations for line events;
+    stateless pull windows for SIEM alerts (restart-safe by construction); skills as the agent's
+    written playbooks; report-only remediation posture with human confirmation gates.</li>
+    <li><strong>Docs:</strong> docs/architecture.md, docs/deploy-guide.md, docs/fleet-onboarding.md,
+    docs/SIMPLE-INSTALL.md, docs/security-notes.md carry the deeper layers.</li>
+  </ul>
+
+  <p class="meta">Total cost: one server, one bot token, zero license fees. Maintained by
+  Bedim Security — author of record: Dawn Robbins.</p>
+
+  <footer>Published by Bedim Security. <a href="https://github.com/dmrobbi/soc-openclaw">dmrobbi/soc-openclaw</a>.</footer>
+</main>
+</body>
+</html>

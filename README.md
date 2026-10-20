@@ -5,6 +5,8 @@ Center) where **OpenClaw is the always-on AI analyst**: it watches
 your host's logs and security tooling in real time, runs scheduled
 sweeps, triages what it finds, and pages you on your chat channel.
 
+**Docs:** https://dmrobbi.github.io/soc-openclaw/
+
 ```
  Linux host(s)          OpenClaw gateway              you
  ---------------        -------------------          --------
